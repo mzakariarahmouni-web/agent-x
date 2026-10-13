@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Agent X — Configuration</title>
+<style>
+  :root { --ink:#1b2130; --muted:#5f6878; --line:#e1e5ec; --accent:#2f5bd3; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23a3a; --bg:#f5f6f8; --card:#fff; --soft:#eef2fb; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#e6e9ef; --muted:#a2aab8; --line:#2b3240; --accent:#7ea2ff; --ok:#5cc489; --warn:#e3a54a; --bad:#ef7b7b; --bg:#11151c; --card:#191e27; --soft:#1e2636; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width:880px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:1.4rem; margin:0; } h2 { font-size:1.05rem; margin:0 0 4px; }
+  .top { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:.9rem; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin:14px 0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; margin-top:12px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
+  input[type=text], input[type=password], select { width:100%; border:1px solid var(--line); border-radius:8px; padding:9px 10px; font:inherit; color:inherit; background:transparent; }
+  button { border:0; border-radius:8px; padding:9px 14px; font:600 .92rem/1 inherit; background:var(--accent); color:#fff; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  .checks { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px; margin-top:12px; }
+  .chk { border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:.9rem; }
+  .chk b { display:inline-block; width:1.2em; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .hint { font-size:.82rem; color:var(--muted); margin-top:4px; }
+  a { color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; margin-top:10px; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  .toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 16px; border-radius:8px; display:none; max-width:90vw; }
+  .login { max-width:380px; margin:12vh auto; }
+  code { background:var(--soft); padding:2px 6px; border-radius:5px; word-break:break-all; }
+</style>
+</head>
+<body>
+<main id="app">
+  <section class="login" id="login">
+    <h1>Agent X</h1>
+    <p class="muted">Page de configuration. Entrez le mot de passe défini dans Cloudflare (secret ADMIN_TOKEN).</p>
+    <input type="password" id="pwd" placeholder="Mot de passe" autocomplete="current-password">
+    <div class="row"><button id="go">Entrer</button></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const toast = (t, ms = 3500) => { const e = $("#toast"); e.textContent = t; e.style.display = "block"; clearTimeout(e._t); e._t = setTimeout(() => (e.style.display = "none"), ms); };
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({ ok: false, error: "Réponse illisible" }));
+  if (r.status === 401) { showLogin(); throw new Error(d.error || "Session expirée"); }
+  return d;
+}
+function showLogin() { $("#app").innerHTML = ""; location.reload(); }
+$("#go")?.addEventListener("click", login);
+$("#pwd")?.addEventListener("keydown", (e) => e.key === "Enter" && login());
+async function login() {
+  const d = await fetch("/api/admin/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: $("#pwd").value }) }).then((r) => r.json());
+  if (!d.ok) return toast(d.error || "Refusé");
+  load();
+}
+
+const KEYS = [
+  { key: "gemini_api_key", label: "Gemini (Google AI Studio)", help: "Gratuit · aistudio.google.com → Get API key", url: "https://aistudio.google.com/app/apikey", need: true },
+  { key: "groq_api_key", label: "Groq", help: "Gratuit · relais automatique", url: "https://console.groq.com/keys", need: true },
+  { key: "tavily_api_key", label: "Tavily (recherche web)", help: "Gratuit : 1 000 recherches par mois", url: "https://app.tavily.com", need: true },
+  { key: "brave_api_key", label: "Brave Search (relais)", help: "Crédit gratuit mensuel, carte demandée", url: "https://api-dashboard.search.brave.com" },
+  { key: "exa_api_key", label: "Exa (relais)", help: "Crédit gratuit mensuel", url: "https://dashboard.exa.ai/api-keys" },
+  { key: "anthropic_api_key", label: "Claude (option CV premium)", help: "Payant à l'usage, environ 0,40 $ par mission", url: "https://platform.claude.com/settings/keys" },
+  { key: "telegram_bot_token", label: "Bot Telegram", help: "Créez un bot avec @BotFather → /newbot, puis collez le jeton", url: "https://t.me/BotFather", need: true },
+  { key: "google_client_id", label: "Google OAuth : identifiant client", help: "Pour envoyer depuis Gmail (voir README, étape Gmail)", url: "https://console.cloud.google.com/apis/credentials" },
+  { key: "google_client_secret", label: "Google OAuth : secret client", help: "", url: "https://console.cloud.google.com/apis/credentials" },
+];
+
+async function load() {
+  const s = await api("/api/admin/status");
+  const c = s.configured;
+  const chk = (ok, label, warn) => `<div class="chk"><b class="${ok ? "ok" : warn ? "warn" : "bad"}">${ok ? "✓" : warn ? "!" : "✗"}</b>${label}</div>`;
+  const callback = (s.public_url || location.origin) + "/oauth/google/callback";
+  $("#app").innerHTML = `
+  <div class="top"><div><h1>Agent X</h1><div class="muted">${s.counts.missions} mission(s) en cours · ${s.counts.candidats} candidat(s) en CV-thèque · ${s.counts.linkedin} message(s) LinkedIn en file</div></div><div class="muted">${s.public_url || ""}</div></div>
+
+  <section><h2>1. Prêt à fonctionner ?</h2>
+    <div class="checks">
+      ${chk(c.gemini_api_key || c.groq_api_key || s.workers_ai, "IA (Gemini, Groq ou Workers AI)")}
+      ${chk(c.gemini_api_key, "Gemini (cerveau principal)", true)}
+      ${chk(c.tavily_api_key || c.brave_api_key || c.exa_api_key, "Recherche web")}
+      ${chk(s.telegram.linked, "Telegram relié")}
+      ${chk(!!s.gmail, s.gmail ? "Gmail : " + s.gmail : "Gmail (emails automatiques)", true)}
+      ${chk(s.workers_ai, "Workers AI (volume)", true)}
+    </div>
+    <div class="row"><button class="ghost" data-test="jugement">Tester l'IA principale</button><button class="ghost" data-test="volume">Tester l'IA volume</button><button class="ghost" data-test="search">Tester la recherche</button></div>
+  </section>
+
+  <section><h2>2. Clés gratuites</h2><div class="muted">Les clés sont chiffrées en base. Laissez vide pour garder la valeur actuelle ; « - » pour effacer.</div>
+    <div class="grid">${KEYS.map((k) => `<div><label>${k.label} ${c[k.key] ? '<span class="ok">✓ enregistrée</span>' : k.need ? '<span class="warn">à renseigner</span>' : ""}</label><input type="password" data-key="${k.key}" placeholder="${c[k.key] ? "••••••••" : "Coller la clé"}" autocomplete="off"><div class="hint">${k.help} · <a href="${k.url}" target="_blank" rel="noopener">obtenir</a></div></div>`).join("")}</div>
+    <div class="row"><button id="saveKeys">Enregistrer les clés</button></div>
+  </section>
+
+  <section><h2>3. Telegram</h2><div class="muted">Après avoir enregistré le jeton du bot, reliez-le à votre conversation.</div>
+    <div class="row"><button id="tg">${s.telegram.linked ? "Relier à nouveau" : "Relier mon Telegram"}</button><span id="tgOut" class="muted">${s.telegram.username ? "@" + s.telegram.username : ""}</span></div>
+  </section>
+
+  <section><h2>4. Gmail</h2><div class="muted">Les emails partent de votre boîte, un par un, aux bons créneaux. URI de redirection à déclarer chez Google : <code>${callback}</code></div>
+    <div class="row"><a href="/oauth/google/start"><button ${c.google_client_id && c.google_client_secret ? "" : "disabled"}>${s.gmail ? "Reconnecter Gmail" : "Connecter Gmail"}</button></a><span class="muted">${s.gmail || "Non connecté"}</span></div>
+  </section>
+
+  <section><h2>5. Préférences</h2>
+    <div class="grid">
+      <div><label>Nom d'expéditeur par défaut</label><input type="text" id="sender" value="${(s.prefs.sender_default || "").replace(/"/g, "&quot;")}" placeholder="Prénom Nom, Cabinet"></div>
+      <div><label>Police des CV</label><select id="font">${["Calibri", "Arial", "Helvetica", "Georgia"].map((f) => `<option ${s.prefs.cv_brand.font === f ? "selected" : ""}>${f}</option>`).join("")}</select></div>
+      <div><label>Couleur des titres du CV</label><input type="text" id="color" value="${s.prefs.cv_brand.color || "#1F3864"}"></div>
+      <div><label><input type="checkbox" id="tjm" ${s.prefs.cv_brand.show_tjm ? "checked" : ""}> Afficher le TJM sur le CV</label><label><input type="checkbox" id="premium" ${s.prefs.premium_cv ? "checked" : ""}> CV rédigés par Claude (payant, meilleure qualité)</label></div>
+    </div>
+    <div class="row"><button id="savePrefs">Enregistrer</button></div>
+  </section>
+
+  <section><h2>6. Extension LinkedIn (Chrome)</h2><div class="muted">Chargez le dossier <code>extension/</code> du dépôt dans chrome://extensions (mode développeur → « Charger l'extension non empaquetée »), puis collez ces deux valeurs dans l'extension.</div>
+    <div class="row"><button class="ghost" id="ext">Afficher l'adresse et le jeton</button></div><div id="extOut" class="hint"></div>
+  </section>
+
+  <section><h2>7. IA et quotas du jour</h2>
+    <table><tr><th>Fournisseur</th><th>Appels</th><th>Erreurs</th><th>État</th></tr>
+    ${(s.usage.length ? s.usage : []).map((u) => `<tr><td>${u.provider}</td><td>${u.requests}</td><td>${u.errors}</td><td>${u.open_until && Date.parse(u.open_until) > Date.now() ? '<span class="warn">en pause</span>' : '<span class="ok">disponible</span>'}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">Aucun appel aujourd\'hui.</td></tr>'}
+    </table>
+  </section>`;
+
+  document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; toast("Test en cours…", 20000);
+    const d = await api("/api/admin/test/" + b.dataset.test).catch((e) => ({ ok: false, error: e.message }));
+    b.disabled = false; toast(d.ok ? "✓ " + d.detail : "✗ " + d.error, 8000);
+  }));
+  $("#saveKeys").addEventListener("click", async () => {
+    const body = {}; document.querySelectorAll("[data-key]").forEach((i) => { if (i.value.trim()) body[i.dataset.key] = i.value.trim(); });
+    const d = await api("/api/admin/secrets", body); toast(d.ok ? d.saved.length + " clé(s) enregistrée(s)" : d.error); load();
+  });
+  $("#tg").addEventListener("click", async () => {
+    const d = await api("/api/admin/telegram", {});
+    if (!d.ok) return toast(d.error);
+    $("#tgOut").innerHTML = `Ouvrez ce lien et touchez « Démarrer » : <a href="${d.link}" target="_blank" rel="noopener">${d.link}</a>`;
+  });
+  $("#savePrefs").addEventListener("click", async () => {
+    const d = await api("/api/admin/prefs", { sender_default: $("#sender").value, premium_cv: $("#premium").checked, cv_brand: { font: $("#font").value, color: $("#color").value, show_tjm: $("#tjm").checked } });
+    toast(d.ok ? "Préférences enregistrées" : d.error);
+  });
+  $("#ext").addEventListener("click", async () => {
+    const d = await api("/api/admin/extension");
+    $("#extOut").innerHTML = `Adresse : <code>${d.url}</code><br>Jeton : <code>${d.token}</code>`;
+  });
+  const q = new URLSearchParams(location.search).get("gmail");
+  if (q === "ok") toast("Gmail connecté ✓"); else if (q === "refus") toast("Connexion Gmail annulée");
+}
+fetch("/api/admin/status").then((r) => { if (r.ok) load(); });
+</script>
+</body>
+</html>

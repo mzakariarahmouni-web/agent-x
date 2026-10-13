@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "ai": {
+    "families": {
+      "jugement": {
+        "label": "Jugement et rédaction (fiche, impact, notation, CV)",
+        "chain": ["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-120b", "workersai:@cf/nvidia/nemotron-3-120b-a12b"]
+      },
+      "volume": {
+        "label": "Volume (scoring, messages, résumés)",
+        "chain": ["workersai:@cf/google/gemma-4-26b-a4b-it", "groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite"]
+      },
+      "cv": {
+        "label": "Rédaction du CV client",
+        "chain": ["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-120b", "workersai:@cf/nvidia/nemotron-3-120b-a12b"],
+        "premium_chain": ["claude:claude-sonnet-5-5", "gemini:gemini-3.8-flash", "groq:openai/gpt-oss-120b"]
+      }
+    },
+    "daily_limits": {
+      "gemini": 1400,
+      "groq": 900,
+      "workersai": 600,
+      "claude": 100000
+    },
+    "switch_at_ratio": 0.9,
+    "breaker": { "errors": 3, "open_minutes": 15 },
+    "timeout_ms": 90000
+  },
+  "search": {
+    "chain": ["tavily", "brave", "exa"],
+    "monthly_limits": { "tavily": 1000, "brave": 950, "exa": 900 },
+    "queries_per_mission": 12,
+    "results_per_query": 10
+  },
+  "schedule": {
+    "timezone": "Europe/Paris",
+    "slots": [
+      { "days": [1, 2, 3, 4], "start": "08:00", "end": "10:00", "use": "premier_contact" },
+      { "days": [1, 2, 3, 4, 5], "start": "12:30", "end": "14:00", "use": "premier_contact" },
+      { "days": [1, 2, 3, 4], "start": "17:30", "end": "18:30", "use": "relance" },
+      { "days": [5], "start": "08:00", "end": "10:00", "use": "premier_contact" }
+    ],
+    "friday_cutoff": "14:00",
+    "deadline_business_hours": 48,
+    "extra_holidays": []
+  },
+  "outreach": {
+    "steps": [
+      { "step": 0, "label": "Premier contact", "channel": "principal", "after_business_hours": 0, "slot": "premier_contact" },
+      { "step": 1, "label": "Relance 1", "channel": "meme", "after_business_hours": 6, "slot": "relance" },
+      { "step": 2, "label": "Relance 2", "channel": "meme", "after_business_hours": 20, "slot": "premier_contact" },
+      { "step": 3, "label": "Relance 3", "channel": "autre", "after_business_hours": 44, "slot": "premier_contact" }
+    ],
+    "max_chars": 400,
+    "email_daily_cap": 40,
+    "linkedin_daily_cap": 25
+  },
+  "mission": {
+    "pool_target": 20,
+    "shortlist_size": 4,
+    "max_clarifying_questions": 3,
+    "validation_reminder_hours": 2
+  },
+  "matching": {
+    "weights": { "competences_souhaitees": 30, "seniorite": 25, "secteur": 20, "langues": 10, "soft_skills": 15 },
+    "tjm_tolerance": 0.1,
+    "contact_threshold": 55
+  },
+  "rgpd": {
+    "retention_days": 730,
+    "files_ttl_days": 90
+  },
+  "budget": {
+    "claude_monthly_cap_usd": 15
+  }
+}

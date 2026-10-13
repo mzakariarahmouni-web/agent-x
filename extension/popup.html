@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 300px; margin: 0; padding: 14px; font: 14px/1.45 system-ui, sans-serif; color: #1b2130; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  label { display: block; font-size: 12px; color: #5f6878; margin-top: 8px; }
+  input { width: 100%; box-sizing: border-box; border: 1px solid #d6dbe4; border-radius: 8px; padding: 7px; font: inherit; }
+  button { margin-top: 10px; width: 100%; border: 0; border-radius: 8px; padding: 9px; font-weight: 600; background: #2f5bd3; color: #fff; cursor: pointer; }
+  button.ghost { background: #fff; color: #2f5bd3; border: 1px solid #d6dbe4; }
+  #out { margin-top: 10px; font-size: 13px; color: #5f6878; }
+  details { margin-top: 12px; }
+</style>
+</head>
+<body>
+<h1>Agent X · LinkedIn</h1>
+<button id="load">Ouvrir la file du jour</button>
+<div id="out"></div>
+<details id="cfg">
+  <summary>Réglages</summary>
+  <label>Adresse d'Agent X</label><input id="url" placeholder="https://agent-x.xxx.workers.dev">
+  <label>Jeton de l'extension</label><input id="token" type="password">
+  <button class="ghost" id="save">Enregistrer</button>
+</details>
+<script src="popup.js"></script>
+</body>
+</html>

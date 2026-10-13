@@ -1,0 +1,19 @@
+{
+  "name": "agent-x",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Agent IA de sourcing et de recrutement de consultants pour recruteurs indépendants (Cloudflare Workers, Telegram).",
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "typecheck": "tsc -p worker --noEmit",
+    "test": "tsc -p worker --noEmit && node scripts/run-tests.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261013.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.149.0"
+  }
+}

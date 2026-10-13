@@ -1,0 +1,18 @@
+// Point d'entrée des tests : expose les modules du Worker au script de test (empaquetés par esbuild).
+export * as schedule from "../worker/src/schedule";
+export * as matching from "../worker/src/matching";
+export * as router from "../worker/src/ai/router";
+export * as docx from "../worker/src/docx";
+export * as cv from "../worker/src/cv";
+export * as qualification from "../worker/src/qualification";
+export * as migrate from "../worker/src/migrate";
+export * as db from "../worker/src/db";
+export * as mission from "../worker/src/mission";
+export * as outreach from "../worker/src/outreach";
+export * as sourcing from "../worker/src/sourcing";
+export * as rgpd from "../worker/src/rgpd";
+export * as pages from "../worker/src/candidate-pages";
+export * as bot from "../worker/src/bot";
+export * as security from "../worker/src/security";
+export * as linkedin from "../worker/src/linkedin-api";
+export { default as worker } from "../worker/src/index";

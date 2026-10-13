@@ -1,0 +1,43 @@
+name = "agent-x"
+main = "worker/src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Pages HTML (configuration, questionnaire) et schéma SQL importés comme texte.
+[[rules]]
+type = "Text"
+globs = ["**/*.html", "**/*.sql"]
+fallthrough = true
+
+# Base de données : missions, candidats (CV-thèque), validations, journal, quotas.
+# Sans « database_id », Wrangler crée la base au premier déploiement (provisionnement automatique).
+# Les tables se créent seules au premier appel (migrations/ appliquées par le Worker).
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-x"
+
+# Fichiers : CV générés (.docx), conservés 90 jours. KV ne demande aucun moyen de paiement (contrairement à R2).
+[[kv_namespaces]]
+binding = "FILES"
+
+# IA de Cloudflare (modèles gratuits dans la limite de 10 000 neurons par jour).
+[ai]
+binding = "AI"
+
+# Une mission = un Workflow : étapes reprenables, attentes, relances, délai de 48 h ouvrées.
+[[workflows]]
+name = "agent-x-mission"
+binding = "MISSION"
+class_name = "MissionWorkflow"
+
+# Planning (UTC) : toutes les 15 min (créneaux d'envoi, relances, réponses Gmail, échéances) ; 02:00 purge RGPD.
+[triggers]
+crons = ["*/15 * * * *", "0 2 * * *"]
+
+[vars]
+# Adresse publique du Worker (liens des questionnaires, retour OAuth Gmail). Renseignée par la page de configuration si vide.
+PUBLIC_URL = ""
+
+# Secrets à définir dans le tableau de bord Cloudflare ou par la page de configuration (jamais ici) :
+#   ADMIN_TOKEN          mot de passe de la page de configuration (obligatoire, à définir dans Cloudflare)
+# Les autres clés (Telegram, Gemini, Groq, Tavily, Brave, Exa, Claude, Google OAuth) se saisissent dans la page de configuration
+# et sont stockées chiffrées dans la base.
