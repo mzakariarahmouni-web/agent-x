@@ -36,6 +36,8 @@ const uniq = (xs: string[]) => {
 };
 
 /** Intitulés recherchés : l'intitulé découpé (« A / B »), puis les intitulés proches, nettoyés et dédoublonnés. */
+const FR_MARKET = /france|paris|[iî]le-de-france|idf|lyon|marseille|lille|toulouse|nantes|bordeaux|rennes|strasbourg|nice|montpellier|grenoble|t[ée]l[ée]travail|remote/i;
+
 export function titlesOf(f: Fiche): string[] {
   return uniq([...f.intitule.split(/\s*[/|]\s*/), ...f.niveau_elargi.intitules_proches].map(cleanTerm)).slice(0, 4);
 }
@@ -56,7 +58,7 @@ export function isProfileUrl(url: string, domain?: string): boolean {
   } catch {
     return false;
   }
-  if (/linkedin\.com$/.test(u.hostname) || domain?.startsWith("linkedin.com")) return /\/in\/[^/]+/.test(u.pathname);
+  if (/linkedin\.com$/.test(u.hostname) || /linkedin\.com/.test(domain ?? "")) return /\/in\/[^/]+/.test(u.pathname);
   if (/malt\.(fr|com)$/.test(u.hostname)) return /^\/profile\/[^/]+/.test(u.pathname);
   if (/github\.com$/.test(u.hostname)) return /^\/[^/]+\/?$/.test(u.pathname) && !/^\/(topics|search|orgs|features|about|pricing|login)\b/.test(u.pathname);
   return true;
@@ -76,29 +78,32 @@ export type SourcingRound = 1 | 2 | 3;
 export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number): SearchQuery[] {
   const titles = titlesOf(f);
   const must = mustSkills(f);
-  const loc = f.localisation ? f.localisation.split(/[,(]/)[0].trim() : "";
+  // Sans lieu précisé, le marché par défaut est la France.
+  const loc = f.localisation ? f.localisation.split(/[,(]/)[0].trim() : "France";
   const locPart = loc ? quote(loc) : "";
+  // Mission en France : profils LinkedIn français (fr.linkedin.com), pour ne pas remonter des profils du monde entier.
+  const LI = !f.localisation || FR_MARKET.test(f.localisation) ? "fr.linkedin.com/in" : "linkedin.com/in";
   const join = (...parts: string[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   const q: SearchQuery[] = [];
   if (round === 1) {
-    q.push({ label: "strict", domain: "linkedin.com/in", boolean: join(orGroup(titles), ...must.map(quote), locPart, EXCLUSIONS) });
-    if (must.length > 2) q.push({ label: "moyen", domain: "linkedin.com/in", boolean: join(orGroup(titles), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
-    q.push({ label: "freelance", domain: "linkedin.com/in", boolean: join(orGroup(titles), must[0] ? quote(must[0]) : "", '(freelance OR "consultant indépendant" OR indépendant)', locPart, EXCLUSIONS) });
-    q.push({ label: "compétences", domain: "linkedin.com/in", boolean: join(...must.map(quote), orGroup([...f.competences_souhaitees.slice(0, 3)]), locPart, EXCLUSIONS) });
+    q.push({ label: "strict", domain: LI, boolean: join(orGroup(titles), ...must.map(quote), locPart, EXCLUSIONS) });
+    if (must.length > 2) q.push({ label: "moyen", domain: LI, boolean: join(orGroup(titles), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
+    q.push({ label: "freelance", domain: LI, boolean: join(orGroup(titles), must[0] ? quote(must[0]) : "", '(freelance OR "consultant indépendant" OR indépendant)', locPart, EXCLUSIONS) });
+    q.push({ label: "compétences", domain: LI, boolean: join(...must.map(quote), orGroup([...f.competences_souhaitees.slice(0, 3)]), locPart, EXCLUSIONS) });
     q.push({ label: "malt", domain: "malt.fr/profile", boolean: join(orGroup(titles.slice(0, 2)), ...must.slice(0, 2).map(quote)) });
     if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud|architecte/i.test(f.intitule)) q.push({ label: "github", domain: "github.com", boolean: join(...must.slice(0, 2).map(quote), loc || "France") });
   } else if (round === 3) {
     // Sourcing continu : rotation de variantes (un intitulé à la fois, synonymes, compétence par compétence, autres sites).
     const wide = uniq([...titles, ...f.synonymes.slice(0, 6).map(cleanTerm)]);
-    for (const t of wide) q.push({ label: `variante ${t}`, domain: "linkedin.com/in", boolean: join(quote(t), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
-    for (const s of [...must, ...f.competences_souhaitees.slice(0, 3)]) q.push({ label: `compétence ${s}`, domain: "linkedin.com/in", boolean: join(orGroup(titles), quote(s), locPart || '(France OR remote)', EXCLUSIONS) });
+    for (const t of wide) q.push({ label: `variante ${t}`, domain: LI, boolean: join(quote(t), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
+    for (const s of [...must, ...f.competences_souhaitees.slice(0, 3)]) q.push({ label: `compétence ${s}`, domain: LI, boolean: join(orGroup(titles), quote(s), locPart || '(France OR remote)', EXCLUSIONS) });
     for (const t of wide.slice(0, 3)) q.push({ label: `malt ${t}`, domain: "malt.fr/profile", boolean: join(quote(t), must[0] ? quote(must[0]) : "", loc) });
   } else {
     const wideTitles = uniq([...titles, ...f.synonymes.slice(0, 4).map(cleanTerm)]);
     const adj = f.niveau_elargi.competences_adjacentes.slice(0, 4);
-    q.push({ label: "élargi", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), must[0] ? orGroup([must[0], ...adj.slice(0, 2)]) : "", locPart, EXCLUSIONS) });
-    q.push({ label: "élargi sans lieu", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), ...must.slice(0, 2).map(quote), '(France OR "Île-de-France" OR remote OR télétravail)', EXCLUSIONS) });
-    if (adj.length) q.push({ label: "adjacent", domain: "linkedin.com/in", boolean: join(orGroup(titles), orGroup(adj), locPart, EXCLUSIONS) });
+    q.push({ label: "élargi", domain: LI, boolean: join(orGroup(wideTitles), must[0] ? orGroup([must[0], ...adj.slice(0, 2)]) : "", locPart, EXCLUSIONS) });
+    q.push({ label: "élargi sans lieu", domain: LI, boolean: join(orGroup(wideTitles), ...must.slice(0, 2).map(quote), '(France OR "Île-de-France" OR remote OR télétravail)', EXCLUSIONS) });
+    if (adj.length) q.push({ label: "adjacent", domain: LI, boolean: join(orGroup(titles), orGroup(adj), locPart, EXCLUSIONS) });
     q.push({ label: "malt élargi", domain: "malt.fr/profile", boolean: join(orGroup(wideTitles), must[0] ? quote(must[0]) : "") });
   }
   const seen = new Set<string>();
@@ -134,7 +139,8 @@ export async function searchCvtheque(env: Env, f: Fiche, limit = 30): Promise<{ 
 const EXTRACT_SYSTEM = `Tu extrais des profils de personnes à partir de résultats de recherche web publics.
 Ignore les offres d'emploi, les entreprises, les articles et les pages qui ne décrivent pas une personne précise.
 N'invente aucune information : un champ inconnu vaut null ou [].
-Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "" }] }`;
+Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "" }] }
+« statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null (jamais un niveau ou un intitulé).`;
 
 export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: string): Promise<SourcedProfile[]> {
   if (!hits.length) return [];
@@ -302,7 +308,8 @@ export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQue
 const PAGE_SYSTEM = `Tu lis la page publique d'un professionnel (profil LinkedIn public, Malt ou GitHub) et tu en extrais un profil fidèle.
 N'invente rien ; un champ absent vaut null ou [].
 « resume » : 3 à 6 lignes factuelles sur les expériences (postes, secteurs, durées, réalisations chiffrées s'il y en a).
-Réponds uniquement en JSON : { "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }`;
+Réponds uniquement en JSON : { "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }
+« statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null.`;
 
 /**
  * Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa),

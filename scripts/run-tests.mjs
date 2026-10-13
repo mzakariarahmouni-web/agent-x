@@ -572,16 +572,16 @@ await test("sourcing : relancé deux fois, aucun doublon (CV-thèque dédoublonn
 await test("sourcing booléen : groupes OR, compétences en AND, exclusions, adapté à chaque moteur", async () => {
   const qs = X.sourcing.buildBooleanQueries(fiche(), 1, 10);
   const strict = qs.find((q) => q.label === "strict");
-  assert(strict.domain === "linkedin.com/in", strict.domain);
+  assert(strict.domain === "fr.linkedin.com/in", strict.domain);
   assert(strict.boolean.startsWith('("Chef de projet AMOA" OR "Business Analyst")'), strict.boolean);
   assert(/"AMOA" "recette" "SAP" "Paris"/.test(strict.boolean) && /-recrute/.test(strict.boolean), strict.boolean);
   assert(qs.some((q) => q.domain === "malt.fr/profile"), "Malt");
   const wide = X.sourcing.buildBooleanQueries(fiche(), 2, 10);
   assert(wide.some((q) => /"MOA"/.test(q.boolean)) && wide.length >= 3, JSON.stringify(wide));
-  assert(X.search.engineQuery("brave", strict).startsWith("site:linkedin.com/in "), "Brave : site:");
+  assert(X.search.engineQuery("brave", strict).startsWith("site:fr.linkedin.com/in "), "Brave : site:");
   assert(!X.search.engineQuery("tavily", strict).includes("site:"), "Tavily : pas de site: dans le texte");
   await X.search.webSearch(env, strict, missionId);
-  assert(JSON.stringify(lastTavily.include_domains) === '["linkedin.com"]', JSON.stringify(lastTavily));
+  assert(JSON.stringify(lastTavily.include_domains) === '["fr.linkedin.com"]', JSON.stringify(lastTavily));
 });
 
 await test("pages LinkedIn publiques lues sans connexion (robot Tavily) : profil enrichi et re-scoré", async () => {
@@ -972,6 +972,19 @@ await test("matching EDI : expression longue reconnue mot à mot, langue vérifi
   const r = X.matching.evaluate(edi(), p, { competences_souhaitees: 70, seniorite: 80, secteur: 60, langues: 50, soft_skills: 60 }, { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 });
   assert(r.mandatoryCoverage === 100 && !r.eliminated && r.score >= 55, JSON.stringify(r));
   assert(!X.matching.hasSkill(["Chef de projet SI", "ERP"], "Gestion de projet EDI"), "faux positif");
+});
+
+await test("matching : « Senior » ou « Employé » ne sont pas des statuts éliminatoires ; profil à l'étranger écarté (mission en France)", () => {
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  const f = { ...edi(), statuts_acceptes: ["freelance", "salarie", "portage"] };
+  const base = { intitule: "Senior EDI Consultant", competences: ["EDIFACT", "XML", "XSLT", "AS2", "SFTP", "SQL", "X12", "Sterling"] };
+  assert(!X.matching.evaluate(f, { ...base, statut: "Senior, Consulting", localisation: "Courbevoie, Île-de-France, France" }, {}, w).eliminated, "Senior");
+  assert(!X.matching.evaluate({ ...f, statuts_acceptes: ["freelance", "salarie"] }, { ...base, statut: "Employé" }, {}, w).eliminated, "Employé = salarié");
+  assert(X.matching.evaluate({ ...f, statuts_acceptes: ["freelance"] }, { ...base, statut: "Employé" }, {}, w).eliminated, "salarié refusé");
+  assert(X.matching.evaluate(f, { ...base, localisation: "Noida, Uttar Pradesh, India" }, {}, w).eliminated, "Inde");
+  assert(!X.matching.evaluate(f, { ...base, localisation: "" }, {}, w).eliminated, "lieu inconnu");
+  assert(!X.matching.evaluate({ ...f, localisation: "Casablanca, Maroc" }, { ...base, localisation: "Casablanca, Maroc" }, {}, w).eliminated, "mission au Maroc");
+  assert(!X.matching.evaluate(f, { ...base, competences: ["EDIFACT", "X12", "Sterling", "AS2", "SFTP", "SQL", "BizTalk", "mapping"] }, {}, w).eliminated, "Linux absent d'un profil public n'élimine pas");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

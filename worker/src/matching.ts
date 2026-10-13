@@ -22,6 +22,27 @@ export interface Profile {
   resume?: string;
 }
 
+/** Statut contractuel reconnu, sinon null (un intitulé de poste comme « Senior » n'est pas un statut). */
+export function normStatut(s?: string | null): "freelance" | "salarie" | "portage" | null {
+  const n = norm(s ?? "");
+  if (!n) return null;
+  if (/portage/.test(n)) return "portage";
+  if (/freelance|independant|indep|auto entrepreneur|micro entrepreneur|contractor|self employed/.test(n)) return "freelance";
+  if (/salarie|employe|employee|cdi|permanent|full time/.test(n)) return "salarie";
+  return null;
+}
+
+const FR = /france|paris|ile de france|idf|lyon|marseille|lille|toulouse|nantes|bordeaux|rennes|strasbourg|nice|montpellier|grenoble|rouen|orleans|tours|dijon|reims|metz|nancy|clermont|caen|angers|le mans|brest|limoges|amiens|besancon|perpignan|toulon|la defense|courbevoie|puteaux|nanterre|boulogne|issy|saint denis|versailles|massy|hauts de seine|yvelines|essonne|val de marne|seine saint denis|val d oise|auvergne|rhone|occitanie|bretagne|normandie|nouvelle aquitaine|grand est|hauts de france|pays de la loire|centre val de loire|bourgogne|provence|cote d azur/;
+const ABROAD = /india|united states|usa|canada|united kingdom|england|london|china|germany|deutschland|spain|espana|italy|italia|portugal|netherlands|belgium|belgique|switzerland|suisse|morocco|maroc|tunisia|tunisie|algeria|algerie|senegal|cote d ivoire|cameroon|cameroun|brazil|mexico|australia|singapore|philippines|pakistan|bangladesh|egypt|nigeria|poland|romania|ukraine|russia|turkey|dubai|united arab emirates|qatar|saudi|japan|korea|vietnam|indonesia|malaysia|ireland|luxembourg|uttar pradesh|maharashtra|karnataka|tamil nadu|telangana|ontario|quebec|florida|california|texas|new york/;
+
+/** Le profil est-il clairement basé hors de France alors que la mission est en France (ou sans lieu précisé) ? */
+export function abroadLocation(profileLoc?: string | null, missionLoc?: string | null): boolean {
+  const m = norm(missionLoc ?? "");
+  if (m && !FR.test(m) && !/remote|teletravail|full remote/.test(m)) return false;
+  const p = norm(profileLoc ?? "");
+  return !!p && !FR.test(p) && ABROAD.test(p);
+}
+
 export interface SubScores {
   competences_souhaitees: number;
   seniorite: number;
@@ -79,15 +100,16 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   const toVerify: string[] = [];
   const terms = profileTerms(p);
 
-  // Compétences obligatoires : on mesure la couverture ; une absence n'élimine que si le profil est riche (≥ 5 compétences listées).
+  // Compétences obligatoires : on mesure la couverture. Une compétence absente d'un profil public n'est pas une preuve d'absence :
+  // elle n'élimine que si AUCUNE obligatoire n'apparaît dans un profil riche (≥ 8 compétences listées).
   // Les langues sont vérifiées au questionnaire : elles ne pèsent pas sur la couverture des compétences.
   const mandatory = f.competences_obligatoires.filter((s) => !isLanguage(s));
   const found = mandatory.filter((s) => hasSkill(terms, s, f.synonymes.filter((x) => norm(x).includes(norm(s)))));
   const coverage = mandatory.length ? found.length / mandatory.length : 1;
-  const richProfile = (p.competences?.length ?? 0) >= 5;
+  const richProfile = (p.competences?.length ?? 0) >= 8;
   const missing = mandatory.filter((s) => !found.includes(s));
   if (missing.length) {
-    if (richProfile && coverage < 0.5) reasons.push(`compétences obligatoires absentes : ${missing.join(", ")}`);
+    if (richProfile && coverage === 0) reasons.push(`compétences obligatoires absentes : ${missing.join(", ")}`);
     else toVerify.push(`à vérifier : ${missing.join(", ")}`);
   }
 
@@ -96,9 +118,13 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   if (max && typeof p.tjm === "number" && p.tjm > max * (1 + tjmTolerance)) reasons.push(`TJM ${p.tjm} € au-dessus du budget (${max} €)`);
   else if (max && p.tjm == null) toVerify.push("TJM à vérifier");
 
-  // Statut : éliminatoire si connu et non accepté.
-  const statut = norm(p.statut ?? "");
-  if (statut && f.statuts_acceptes.length && !f.statuts_acceptes.some((s) => statut.includes(norm(s)))) reasons.push(`statut ${p.statut} non accepté`);
+  // Statut : éliminatoire seulement s'il est reconnu (freelance, salarié, portage) et non accepté.
+  const statut = normStatut(p.statut);
+  if (statut && f.statuts_acceptes.length && !f.statuts_acceptes.map(normStatut).includes(statut)) reasons.push(`statut ${statut} non accepté`);
+
+  // Lieu : un profil clairement basé hors de France est écarté quand la mission est en France (ou sans lieu précisé).
+  const abroad = abroadLocation(p.localisation, f.localisation);
+  if (abroad) reasons.push(`basé hors de France (${p.localisation})`);
 
   // Séniorité : éliminatoire sous le niveau élargi (marge de 2 ans), sinon pondérée.
   const minYears = f.niveau_elargi.seniorite_min_annees ?? (f.seniorite_min_annees != null ? Math.max(0, f.seniorite_min_annees - 2) : null);
