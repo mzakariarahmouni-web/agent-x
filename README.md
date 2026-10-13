@@ -1,6 +1,6 @@
 # Agent X
 
-Agent IA de sourcing et de recrutement de consultants pour recruteurs indépendants. Il reçoit une fiche de poste sur Telegram, source les profils (CV-thèque puis web public), contacte et relance aux bons créneaux, fait remplir un questionnaire de qualification, et livre une shortlist de 4 candidats avec des CV anonymisés, compatibles ATS, en 48 h ouvrées. Le recruteur n'intervient qu'à 4 validations, sur Telegram.
+Agent IA de sourcing et de recrutement de consultants pour recruteurs indépendants. Il reçoit une fiche de poste sur Telegram, source les profils (CV-thèque puis web public), vous les soumet en cartes Go / No go, contacte et relance aux bons créneaux avec le message que vous avez validé, fait remplir un questionnaire de qualification, et livre une shortlist de 4 candidats avec des CV anonymisés, compatibles ATS, en 48 h ouvrées. Le recruteur n'intervient que sur Telegram : 4 validations, plus la revue des profils et le message de premier contact.
 
 Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (Gemini, Workers AI, Groq) qui bascule seul d'un fournisseur à l'autre.
 
@@ -10,8 +10,10 @@ Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (G
 | --- | --- | --- |
 | F1 Fiche modèle | Transforme la fiche brute (texte, PDF ou capture) en fiche structurée : critères éliminatoires et pondérés, mots-clés, périmètre élargi, niveau exigeant, questionnaire | n°1 : fiche, questionnaire, nom d'expéditeur |
 | F2 Évolutions | Applique une évolution du besoin, re-score le vivier, apprend les exigences récurrentes du client | — |
-| F3 Sourcing | CV-thèque d'abord, puis recherche booléenne autonome (LinkedIn public, Malt, GitHub) avec élargissement automatique ; lecture des pages publiques des meilleurs profils sans connexion ; scoring par la matrice | — |
-| F4 Contact | Email automatique depuis Gmail ou Outlook ; LinkedIn pré-rempli par l'extension Edge (un clic « Envoyer ») ; 3 relances aux créneaux ouvrés | — |
+| F3 Sourcing | CV-thèque d'abord, puis recherche booléenne autonome (LinkedIn public, Malt, GitHub) avec élargissement automatique ; lecture des pages publiques des meilleurs profils sans connexion ; scoring par la matrice, qui apprend de vos No go | — |
+| Revue | Une carte Telegram par profil (score, points forts, à vérifier, source, email connu) | ✅ Go ou ❌ No go avec motif (niveau, budget, déjà connu, autre) : le profil reste en CV-thèque |
+| Message | Modèle de premier contact personnalisé par profil, montré sur 2 exemples ; email professionnel cherché avec Hunter pour les Go sans adresse | Valider, modifier, et choisir le canal : auto, tout email ou tout LinkedIn |
+| F4 Contact | Email automatique depuis Gmail ou Outlook ; LinkedIn pré-rempli par l'extension Edge (profil, lien et message ; un clic « Envoyer ») ; 3 relances aux créneaux ouvrés, dans le ton du message validé. Le sourcing continue en parallèle (nouvelles requêtes toutes les 6 h tant que le vivier est sous la cible) | — |
 | F5 Qualification | Questionnaire court noté sur une grille commune ; rejet proposé, jamais automatique | n°2 : rejet définitif |
 | F6 CV | Dossier de compétences anonymisé, .docx compatible ATS, adéquation au descriptif mesurée, aucune compétence inventée | n°3 et 4 : shortlist et envoi |
 | F7 Suivi | Décision du client (placé, non retenu) en un clic | — |
@@ -40,6 +42,7 @@ Ouvrez `https://agent-x.<votre-sous-domaine>.workers.dev/config`, entrez votre `
 | Groq (relais) | Oui | [console.groq.com/keys](https://console.groq.com/keys) |
 | Tavily (recherche) | Oui, 1 000 recherches par mois | [app.tavily.com](https://app.tavily.com) |
 | Brave, Exa (relais de recherche) | Crédit mensuel gratuit | [Brave](https://api-dashboard.search.brave.com), [Exa](https://dashboard.exa.ai/api-keys) |
+| Hunter (emails professionnels, option) | Oui, 25 recherches par mois | [hunter.io/api-keys](https://hunter.io/api-keys) |
 | Bot Telegram | Oui | [@BotFather](https://t.me/BotFather) → `/newbot` |
 | Claude (option CV premium) | Non, environ 0,40 $ par mission | [platform.claude.com](https://platform.claude.com/settings/keys) |
 
@@ -84,9 +87,10 @@ Chaque jour : icône Agent X → **Ouvrir la file du jour**. L'extension ouvre c
 
 1. Collez une fiche de poste dans Telegram (ou envoyez le PDF).
 2. Validez la fiche modèle (n°1), ou touchez **Modifier** et écrivez la correction.
-3. Laissez l'agent travailler. Commandes : `/missions` (avancement, évolution, clôture), `/linkedin` (file sur mobile), `/etat` (IA et quotas), `/effacer email-ou-url`.
-4. Tranchez les rejets proposés (n°2) et validez la shortlist (n°3 et 4) : les CV arrivent en pièces jointes, prêts à transmettre.
-5. Indiquez la décision du client : **Placé** ou **Non retenu**.
+3. Tranchez les cartes de profils (✅ Go ou ❌ No go avec motif), puis validez le message de premier contact et choisissez le canal (auto, tout email, tout LinkedIn).
+4. Laissez l'agent travailler. Commandes : `/missions` (avancement, évolution, clôture), `/linkedin` (file sur mobile), `/etat` (IA et quotas), `/effacer email-ou-url`.
+5. Tranchez les rejets proposés (n°2) et validez la shortlist (n°3 et 4) : les CV arrivent en pièces jointes, prêts à transmettre.
+6. Indiquez la décision du client : **Placé** ou **Non retenu**.
 
 ## Continuité de service
 
@@ -105,7 +109,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 43 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 51 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 
@@ -114,7 +118,7 @@ npx wrangler dev
 | `worker/src/` | Worker Cloudflare : bot, Workflow de mission, IA, sourcing, contacts, questionnaire, CV, pages |
 | `migrations/` | Schéma de la base, appliqué automatiquement au premier appel |
 | `config/defaults.json` | Chaînes d'IA, quotas, créneaux, relances, matrice, durées RGPD |
-| `extension/` | Extension Chrome LinkedIn |
+| `extension/` | Extension LinkedIn (Edge et Chrome) |
 | `scripts/` | Tests |
 
 ## Limites connues (v0.1)

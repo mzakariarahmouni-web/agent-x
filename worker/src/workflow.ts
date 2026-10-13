@@ -10,7 +10,7 @@ import {
   enrichTopProfiles,
   getMission,
   markPresented,
-  planOutreach,
+  poolStats,
   progress,
   qualifyPending,
   reportSourcing,
@@ -20,6 +20,9 @@ import {
   sourceFromWeb,
   startMission,
 } from "./mission";
+import { applyMessage, type ChannelMode, closeReview, draftModel, type MessageModel, remindReview, sendMessageValidation, sendReviewCards } from "./review";
+import { readFiche } from "./fiche";
+import { getSetting } from "./db";
 import { SearchUnavailable } from "./search";
 import { notify } from "./telegram";
 
@@ -32,6 +35,8 @@ export interface MissionEvent {
   action?: "ok" | "mod" | "no";
   text?: string;
   kind?: "answers" | "evolution";
+  /** Canal choisi à la validation du message de premier contact. */
+  mode?: ChannelMode;
 }
 
 const RETRY = { retries: { limit: 3, delay: "30 seconds" as const, backoff: "exponential" as const }, timeout: "15 minutes" as const };
@@ -80,12 +85,51 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     }
   }
 
+  /** Modèle de premier contact : rédaction, validation (2 exemples), modifications, puis choix du canal et planification. */
+  private async messagePhase(step: WorkflowStep, id: string, tag: string, reminderHours: number): Promise<void> {
+    const env = this.env;
+    let model = await this.resilient(step, `message:${tag}:redaction`, async () => {
+      const m = await getMission(env, id);
+      const sender = m.sender_name || (await getSetting(env, "sender_default")) || "Le recruteur";
+      return draftModel(env, readFiche(m.fiche), sender, undefined, undefined, id);
+    });
+    for (let round = 0; ; round++) {
+      const current: MessageModel = model;
+      await step.do(`message:${tag}:envoi#${round}`, async () => {
+        await sendMessageValidation(env, id, current);
+        return true;
+      });
+      const d = await this.waitDecision(step, `vmsg:${tag}#${round}`, "vmsg", (n) => sendMessageValidation(env, id, current, n), reminderHours);
+      if (d.action === "mod") {
+        model = await this.resilient(step, `message:${tag}:modif#${round}`, async () => {
+          const m = await getMission(env, id);
+          return draftModel(env, readFiche(m.fiche), m.sender_name || "Le recruteur", d.text ?? "", current, id);
+        });
+        continue;
+      }
+      await step.do(`message:${tag}:valide`, async () => {
+        const out = await applyMessage(env, id, current, d.mode ?? "auto");
+        await notify(
+          env,
+          `🚀 Premier contact lancé · ${out.planned} profil(s) planifié(s) au prochain créneau (email : ${out.email} · LinkedIn : ${out.linkedin})${out.none ? `\n${out.none} profil(s) sans canal joignable : gardés en CV-thèque.` : ""}\nJe continue de sourcer en parallèle ; les nouveaux profils arrivent en cartes.`,
+        );
+        return true;
+      });
+      return;
+    }
+  }
+
   async run(event: WorkflowEvent<MissionParams>, step: WorkflowStep): Promise<string> {
     const id = event.payload.missionId;
     const env = this.env;
     const cfg = await step.do("config", async () => {
       const c = await getConfig(env);
-      return { reminderHours: c.mission.validation_reminder_hours, shortlist: c.mission.shortlist_size };
+      return {
+        reminderHours: c.mission.validation_reminder_hours,
+        shortlist: c.mission.shortlist_size,
+        poolTarget: c.mission.pool_target,
+        sourceEvery: Math.max(1, Math.round((c.mission.continuous_sourcing_every_hours ?? 6) / 2)),
+      };
     });
 
     // F1 + validation n°1 (boucle tant que le recruteur modifie).
@@ -110,18 +154,31 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
 
     await step.do("lancement", () => startMission(env, id));
 
-    // F3 : CV-thèque, puis web public, puis planification des contacts (F4 est exécuté par le cron, aux créneaux).
+    // F3 : CV-thèque, puis web public (booléen), tour élargi si besoin, lecture des pages publiques.
     const fromCv = await this.resilient(step, "sourcing:cvtheque", () => sourceFromCvtheque(env, id));
     const fromWeb = await this.resilient(step, "sourcing:web", () => sourceFromWeb(env, id, 1));
     // Vivier trop maigre : tour élargi (synonymes, intitulés voisins, compétences adjacentes).
     const widened = await this.resilient(step, "sourcing:web-elargi", () => sourceFromWeb(env, id, 2));
     // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
     const enriched = await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id));
-    const plan = await step.do("contacts:planification", () => planOutreach(env, id));
     await step.do("sourcing:rapport", async () => {
-      await reportSourcing(env, id, { cvtheque: fromCv, web: fromWeb + widened, widened, enriched, planned: plan.planned, eliminated: plan.eliminated });
+      const pool = await poolStats(env, id);
+      await reportSourcing(env, id, { cvtheque: fromCv, web: fromWeb + widened, widened, enriched, toReview: pool.toReview, eliminated: pool.eliminated });
       return true;
     });
+
+    // Revue : une carte par profil, Go / No go (motif). Rien n'est envoyé sans Go.
+    const cards = await step.do("revue:cartes", () => sendReviewCards(env, id));
+    let messageDone = false;
+    if (cards > 0) {
+      await this.waitDecision(step, "revue", "revue", (n) => remindReview(env, id, n), cfg.reminderHours);
+      const r = await step.do("revue:cloture", () => closeReview(env, id));
+      // Message de premier contact validé une fois pour la mission (les Go suivants sont planifiés directement).
+      if (r.go > 0) {
+        await this.messagePhase(step, id, "1", cfg.reminderHours);
+        messageDone = true;
+      }
+    }
 
     // F5 : réveil à chaque questionnaire reçu (ou toutes les 2 h), jusqu'à la shortlist ou l'échéance.
     for (let tick = 0; tick < 200; tick++) {
@@ -139,6 +196,26 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         });
       }
       await this.resilient(step, `qualification#${tick}`, () => qualifyPending(env, id));
+      // Sourcing continu, en parallèle des contacts : tant que le vivier actif est sous la cible et qu'aucune revue n'est en attente.
+      if (tick % cfg.sourceEvery === cfg.sourceEvery - 1) {
+        const pool = await step.do(`continu#${tick}:vivier`, () => poolStats(env, id));
+        if (pool.active < cfg.poolTarget && pool.pending === 0) {
+          await this.resilient(step, `continu#${tick}:recherche`, () => sourceFromWeb(env, id, 3));
+          await this.resilient(step, `continu#${tick}:lecture`, () => enrichTopProfiles(env, id, 5));
+          await step.do(`continu#${tick}:cartes`, () => sendReviewCards(env, id));
+        }
+      }
+      // Premiers Go arrivés après la revue initiale : le message de contact est validé à ce moment-là.
+      if (!messageDone) {
+        const go = await step.do(`message#${tick}:go`, async () => {
+          const r = await env.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = ? AND state = 'go'").bind(id).first<{ n: number }>();
+          return r?.n ?? 0;
+        });
+        if (go > 0) {
+          await this.messagePhase(step, id, `t${tick}`, cfg.reminderHours);
+          messageDone = true;
+        }
+      }
       const st = await step.do(`avancement#${tick}`, async () => {
         const p = await progress(env, id);
         const m = await getMission(env, id);

@@ -6,6 +6,7 @@ import { mailReady, mailRepliesFrom, sendMail } from "./mail";
 import type { SourcedProfile } from "./sourcing";
 import { addBusinessHours, nextSlot, type ScheduleConfig } from "./schedule";
 import { newId } from "./security";
+import { accroche, renderModel } from "./review";
 import { notify } from "./telegram";
 
 /** F4 — Prise de contact et relances : email automatique, LinkedIn pré-rempli (extension), créneaux et plafonds. */
@@ -24,7 +25,17 @@ const STEP_INTENT = [
   "Relance 3 (message de clôture) : dernière prise de contact, sans pression ; propose de rester en contact pour d'autres missions.",
 ];
 
-export async function draftMessage(env: Env, f: Fiche, p: SourcedProfile, step: number, channel: Channel, sender: string, maxChars: number, missionId?: string): Promise<Draft> {
+export async function draftMessage(
+  env: Env,
+  f: Fiche,
+  p: SourcedProfile,
+  step: number,
+  channel: Channel,
+  sender: string,
+  maxChars: number,
+  missionId?: string,
+  style?: string,
+): Promise<Draft> {
   const { data } = await ai<Draft>(env, {
     family: "volume",
     label: `message étape ${step}`,
@@ -36,7 +47,9 @@ Réponds uniquement en JSON : { "objet": "", "message": "" }`,
     prompt: `Expéditeur : ${sender}
 Étape : ${STEP_INTENT[Math.min(step, 3)]}
 Mission : ${JSON.stringify({ intitule: f.intitule, secteur: f.secteur, localisation: f.localisation, teletravail: f.teletravail, duree: f.duree, date_debut: f.date_debut, competences: f.competences_obligatoires })}
-Candidat : ${JSON.stringify({ prenom: (p.nom ?? "").split(" ")[0] || null, intitule: p.intitule, competences: p.competences?.slice(0, 8), secteurs: p.secteurs })}`,
+Candidat : ${JSON.stringify({ prenom: (p.nom ?? "").split(" ")[0] || null, intitule: p.intitule, competences: p.competences?.slice(0, 8), secteurs: p.secteurs })}${
+      style ? `\nPremier message validé par le recruteur (garde son ton et son vocabulaire, sans le répéter) :\n${style}` : ""
+    }`,
     json: true,
     maxTokens: 600,
     validate: (d) => (!d?.message ? "message vide" : d.message.length > maxChars + 40 ? `message trop long (${d.message.length})` : null),
@@ -72,6 +85,8 @@ interface DueRow {
   fiche: string;
   sender_name: string | null;
   title: string;
+  message_template: string | null;
+  message_objet: string | null;
 }
 
 /** Traite les contacts arrivés à échéance (appelé toutes les 15 minutes). */
@@ -83,7 +98,7 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
   const mailOk = await mailReady(env);
   const defaultSender = (await getSetting(env, "sender_default")) || "Le recruteur";
   const { results } = await env.DB.prepare(
-    `SELECT a.id, a.mission_id, a.candidate_id, a.contact_step, a.channel, a.token, c.profile, c.email, c.linkedin_url, m.fiche, m.sender_name, m.title
+    `SELECT a.id, a.mission_id, a.candidate_id, a.contact_step, a.channel, a.token, c.profile, c.email, c.linkedin_url, m.fiche, m.sender_name, m.title, m.message_template, m.message_objet
      FROM applications a JOIN candidates c ON c.id = a.candidate_id JOIN missions m ON m.id = a.mission_id
      WHERE a.state IN ('a_contacter', 'contacte') AND a.next_action_at IS NOT NULL AND a.next_action_at <= ? AND m.status = 'en_cours'
      ORDER BY a.next_action_at LIMIT ?`,
@@ -107,7 +122,9 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
     }
     const canEmail = !!r.email && mailOk;
     const canLinkedin = !!r.linkedin_url;
-    const principal: Channel | null = r.channel ?? (canEmail ? "email" : canLinkedin ? "linkedin" : null);
+    // Canal choisi à la revue ; s'il n'est plus possible (boîte déconnectée), l'autre canal prend le relais.
+    const fallback: Channel | null = canEmail ? "email" : canLinkedin ? "linkedin" : null;
+    const principal: Channel | null = r.channel === "email" ? (canEmail ? "email" : fallback) : r.channel === "linkedin" ? (canLinkedin ? "linkedin" : fallback) : fallback;
     let channel = principal;
     if (step.channel === "autre") channel = principal === "email" && canLinkedin ? "linkedin" : principal === "linkedin" && canEmail ? "email" : principal;
     if (!channel) {
@@ -123,7 +140,14 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
     const sender = r.sender_name || defaultSender;
     const f = readFiche(r.fiche);
     const p = parseJson<SourcedProfile>(r.profile, { source: "inconnu" });
-    const draft = await draftMessage(env, f, p, r.contact_step, channel, sender, cfg.outreach.max_chars, r.mission_id);
+    // Premier contact : le modèle validé, personnalisé par une accroche ; relances : rédigées dans le même ton.
+    const draft: Draft =
+      r.contact_step === 0 && r.message_template
+        ? {
+            objet: r.message_objet ?? "",
+            message: renderModel(r.message_template, { prenom: (p.nom ?? "").split(" ")[0], accroche: await accroche(env, f, p, r.mission_id) }),
+          }
+        : await draftMessage(env, f, p, r.contact_step, channel, sender, cfg.outreach.max_chars, r.mission_id, r.message_template ?? undefined);
     const body = draft.message + footer(channel, publicUrl, token, sender);
     if (channel === "email") {
       await sendMail(env, sender, r.email!, draft.objet || f.intitule, body);

@@ -5,7 +5,8 @@ import { getMission, storeBriefFile } from "./mission";
 import { eraseCandidate, findCandidate } from "./rgpd";
 import { derivedSecret, newId, safeEqual } from "./security";
 import { usageToday } from "./usage";
-import { answerCallback, type Bot, type Button, downloadFile, send } from "./telegram";
+import { closeReview, goBest, reviewDecision, reviewPending } from "./review";
+import { answerCallback, type Bot, type Button, downloadFile, editButtons, send } from "./telegram";
 import { answerValidation, applyRejection, getValidation } from "./validations";
 import type { MissionEvent } from "./workflow";
 
@@ -28,7 +29,7 @@ interface TgUpdate {
 const AWAIT_KEY = "telegram_awaiting";
 
 interface Awaiting {
-  kind: "v1" | "v3" | "evolution";
+  kind: "v1" | "v3" | "vmsg" | "evolution";
   missionId: string;
   validationId?: string;
 }
@@ -54,7 +55,9 @@ export async function createMission(env: Env, raw: string, file?: { bytes: Uint8
 const HELP = `🤖 Agent X — mode d'emploi
 1. Colle ici une fiche de poste brute (texte), ou envoie-la en PDF ou en capture.
 2. Je la transforme en fiche modèle et te demande de la valider (n°1).
-3. Je source (CV-thèque puis web public), contacte et relance aux bons créneaux, et fais remplir le questionnaire.
+3. Je source (CV-thèque puis web public) et t'envoie une carte par profil : ✅ Go ou ❌ No go avec le motif.
+   Puis je te propose le message de premier contact (2 exemples) : tu valides et choisis le canal (auto, email ou LinkedIn).
+   Je contacte, relance aux bons créneaux et continue de sourcer en parallèle.
 4. Je te propose les rejets (n°2), puis la shortlist de 4 avec les CV anonymisés (n°3 et 4).
 5. Tu m'indiques la décision du client : placé ou non retenu.
 
@@ -63,7 +66,7 @@ Commandes : /missions · /linkedin · /etat · /effacer email-ou-url`;
 async function listMissions(env: Env, b: Bot): Promise<void> {
   const { results } = await env.DB.prepare(
     `SELECT m.id, m.title, m.status, m.deadline_at,
-       (SELECT COUNT(*) FROM applications a WHERE a.mission_id = m.id AND a.state IN ('a_contacter','contacte')) AS contact,
+       (SELECT COUNT(*) FROM applications a WHERE a.mission_id = m.id AND a.state IN ('go','a_contacter','contacte')) AS contact,
        (SELECT COUNT(*) FROM applications a WHERE a.mission_id = m.id AND a.state IN ('qualifie','cv_formate','presente')) AS qualif
      FROM missions m WHERE m.status NOT IN ('abandonnee','terminee') ORDER BY m.created_at DESC LIMIT 8`,
   ).all<{ id: string; title: string; status: string; deadline_at: string | null; contact: number; qualif: number }>();
@@ -171,17 +174,50 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
       await reply("C'est noté.");
       return void (await send(env, b, msg));
     }
-    const type = v.kind === "fiche" ? "v1" : "v3";
+    const type = v.kind === "fiche" ? "v1" : v.kind === "message" ? "vmsg" : "v3";
     if (action === "mod") {
       await setSetting(env, AWAIT_KEY, JSON.stringify({ kind: type, missionId: v.mission_id ?? "", validationId: v.id } satisfies Awaiting));
       await reply("Écris ta modification.");
-      return void (await send(env, b, type === "v1" ? "✏️ Écris la modification (une ou plusieurs lignes) :" : "✏️ Quels numéros retirer ? (ex. « retire 2 »)"));
+      return void (await send(
+        env,
+        b,
+        type === "v1"
+          ? "✏️ Écris la modification (une ou plusieurs lignes) :"
+          : type === "vmsg"
+            ? "✏️ Que faut-il changer dans le message ? (ex. « plus court, mentionne le télétravail 3 jours »)"
+            : "✏️ Quels numéros retirer ? (ex. « retire 2 »)",
+      ));
+    }
+    if (type === "vmsg") {
+      const mode = action === "em" ? "email" : action === "li" ? "linkedin" : "auto";
+      await answerValidation(env, v.id, "validee", mode);
+      await sendMissionEvent(env, v.mission_id!, "vmsg", { action: "ok", mode });
+      await reply("Validé ✅");
+      return void (await send(env, b, `✅ Message validé (canal : ${mode === "auto" ? "auto" : mode === "email" ? "tout par email" : "tout LinkedIn"}). Je planifie les premiers contacts.`));
     }
     await answerValidation(env, v.id, action === "ok" ? "validee" : "refusee");
     await sendMissionEvent(env, v.mission_id!, type, { action: action === "ok" ? "ok" : "no" });
     await reply(action === "ok" ? "Validé ✅" : "C'est noté.");
     if (action === "ok") await send(env, b, type === "v1" ? "🚀 Mission lancée : sourcing en cours." : "📤 Shortlist validée : les CV sont prêts à transmettre au client.");
     return;
+  }
+  if (kind === "rv") {
+    const r = await reviewDecision(env, id, action);
+    await reply(r.text.slice(0, 190));
+    if (cb.message) await editButtons(env, b, cb.message.message_id, `${cb.message.text ?? ""}\n\n→ ${r.text}`);
+    if (r.reviewDone && r.missionId) await endReview(env, b, r.missionId);
+    return;
+  }
+  if (kind === "rvall") {
+    const n = await goBest(env, id, Number(action) || 5);
+    await reply(`${n} Go`);
+    await send(env, b, `✅ Go pour ${n} profil(s).`);
+    if ((await reviewPending(env, id)) === 0) await endReview(env, b, id);
+    return;
+  }
+  if (kind === "rvfin") {
+    await reply("Revue terminée");
+    return endReview(env, b, id);
   }
   if (kind === "ev") {
     await setSetting(env, AWAIT_KEY, JSON.stringify({ kind: "evolution", missionId: id } satisfies Awaiting));
@@ -225,6 +261,20 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
     ));
   }
   await reply("Action inconnue.");
+}
+
+/**
+ * Fin d'une revue : les profils non tranchés restent en CV-thèque. Tant que le message n'est pas validé,
+ * le Workflow reprend la main (message de premier contact) ; ensuite, les Go sont planifiés au fil de l'eau.
+ */
+async function endReview(env: Env, b: Bot, missionId: string): Promise<void> {
+  const m = await env.DB.prepare("SELECT message_ok FROM missions WHERE id = ?").bind(missionId).first<{ message_ok: number }>();
+  const r = await closeReview(env, missionId);
+  if (!m?.message_ok) {
+    await sendMissionEvent(env, missionId, "revue", { action: "ok" });
+    return void (await send(env, b, r.go ? "🏁 Revue terminée. Je prépare le message de premier contact." : "🏁 Revue terminée, aucun Go : je continue de sourcer et t'enverrai de nouvelles cartes."));
+  }
+  await send(env, b, `🏁 Revue terminée${r.skipped ? ` (${r.skipped} profil(s) non tranché(s), gardés en CV-thèque)` : ""}. Les Go sont planifiés au prochain créneau.`);
 }
 
 /** Webhook Telegram : seul le recruteur relié est écouté ; la liaison se fait par /start <code>. */

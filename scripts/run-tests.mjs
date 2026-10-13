@@ -30,6 +30,7 @@ await build({
 });
 const X = await import(out);
 const SCHEMA = readFileSync("migrations/0001_init.sql", "utf8");
+const SCHEMA2 = readFileSync("migrations/0002_revue.sql", "utf8");
 
 // ───────────── Outils de test ─────────────
 let failed = 0;
@@ -144,7 +145,14 @@ const FICHE = {
   hypotheses: ["Démarrage mi-novembre"],
 };
 
+const aiLog = [];
 function respond(system, prompt) {
+  aiLog.push({ system, prompt });
+  if (/message type de premier contact/.test(system))
+    return /Modification demandée/.test(prompt)
+      ? { objet: "Mission AMOA, télétravail", modele: "Bonjour {prenom},\n{accroche}\nMission AMOA banque à Paris, 12 mois, télétravail 3 jours. Seriez-vous disponible pour en parler cette semaine ?" }
+      : { objet: "Mission AMOA banque", modele: "Bonjour {prenom},\n{accroche}\nJe recrute un chef de projet AMOA pour une banque à Paris (12 mois). Seriez-vous disponible pour en parler cette semaine ?" };
+  if (/Tu écris UNE phrase/.test(system)) return { accroche: "Votre parcours en AMOA bancaire et en recette SAP correspond exactement à cette mission." };
   if (/fiche modèle structurée/.test(system)) return FICHE;
   if (/questionnaires de pré-qualification/.test(system))
     return {
@@ -165,6 +173,7 @@ function respond(system, prompt) {
           index: Number(m[1]),
           nom: m[2].split(" - ")[0],
           intitule: "Chef de projet AMOA",
+          entreprise: "Banque Exemple SA",
           localisation: "Paris",
           competences: ["AMOA", "recette", "SAP", "Jira"],
           annees_experience: 8,
@@ -215,6 +224,7 @@ let lastGroq = null;
 let lastTavily = null;
 let lastOutlook = null;
 let groqMode = "ok";
+let lastHunter = null;
 const tgSent = [];
 let existingWebhook = "";
 const fakeFetch = async (url, init = {}) => {
@@ -266,6 +276,11 @@ const fakeFetch = async (url, init = {}) => {
     if (method === "getWebhookInfo") return ok({ ok: true, result: { url: existingWebhook } });
     return ok({ ok: true, result: { message_id: tgSent.length } });
   }
+  if (u.host === "api.hunter.io") {
+    calls.push("hunter");
+    lastHunter = Object.fromEntries(u.searchParams);
+    return ok({ data: { email: "jean.dupont@banque-exemple.fr", score: 92 } });
+  }
   if (u.host === "oauth2.googleapis.com") return ok({ access_token: "at" });
   if (u.host === "login.microsoftonline.com") {
     calls.push("ms_token");
@@ -303,7 +318,8 @@ const events = [];
 async function makeEnv() {
   const DB = new FakeD1();
   for (const s of X.migrate.splitSql(SCHEMA)) DB.db.exec(s);
-  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '1')");
+  for (const s of X.migrate.splitSql(SCHEMA2)) DB.db.exec(s);
+  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '2')");
   const env = {
     DB,
     FILES: new FakeKV(),
@@ -765,6 +781,153 @@ await test("extension Edge : archive .zip préconfigurée (adresse + jeton), à 
   const tok = await X.security.derivedSecret(env.ADMIN_TOKEN, "extension");
   assert(text.includes(tok) && text.includes("https://agent-x.test.workers.dev"), "réglages non préremplis");
   if (process.env.ZIP_OUT) (await import("node:fs")).writeFileSync(process.env.ZIP_OUT, bytes);
+});
+
+// ───────────── Revue Go / No go, message de premier contact, Hunter, sourcing continu ─────────────
+const rv = await makeEnv();
+let rvMission;
+const rvApps = {};
+const rvCtx = { waitUntil() {} };
+const rvPost = async (update) =>
+  X.worker.fetch(
+    new Request("https://x/telegram/webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": await X.security.derivedSecret(rv.ADMIN_TOKEN, "telegram") }, body: JSON.stringify(update) }),
+    rv,
+    rvCtx,
+  );
+const tap = (data, text = "carte") => rvPost({ callback_query: { id: "cb", data, message: { message_id: 50, chat: { id: 42 }, text } } });
+
+await test("revue : une carte par profil (score, points forts, source, email), rien n'est contacté sans Go", async () => {
+  rvMission = await X.bot.createMission(rv, "Chef de projet AMOA pour une banque à Paris, 12 mois, SAP, recette, AMOA, freelance, TJM 650. ".repeat(3));
+  await X.mission.analyzeMission(rv, rvMission);
+  await X.mission.startMission(rv, rvMission, paris(2026, 10, 19, 9));
+  assert((await X.mission.sourceFromWeb(rv, rvMission)) === 2, "sourcing");
+  tgSent.length = 0;
+  const n = await X.review.sendReviewCards(rv, rvMission);
+  assert(n === 2, `${n} cartes`);
+  const cards = tgSent.filter((m) => m.body.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("rv:"));
+  assert(cards.length === 2, `${cards.length} cartes Telegram`);
+  const martin = cards.find((c) => /Brigitte Martin/.test(c.body.text));
+  assert(/\/100/.test(martin.body.text) && /email : oui/.test(martin.body.text) && /linkedin\.com/.test(martin.body.text) && /chez Banque Exemple SA/.test(martin.body.text), martin.body.text);
+  assert(martin.body.reply_markup.inline_keyboard[1].map((b) => b.text).join() === "❌ Niveau,❌ Budget,❌ Déjà connu,❌ Autre", "motifs");
+  for (const c of cards) rvApps[/Martin/.test(c.body.text) ? "martin" : "jean"] = c.body.reply_markup.inline_keyboard[0][0].callback_data.split(":")[1];
+  const states = (await rv.DB.prepare("SELECT state FROM applications WHERE mission_id = ?").bind(rvMission).all()).results.map((r) => r.state);
+  assert(states.every((s) => s === "en_revue"), states.join());
+  assert((await X.mission.planOutreach(rv, rvMission)).planned === 0, "contact planifié sans Go");
+  assert((await X.review.planGoContacts(rv, rvMission)).planned === 0, "contact planifié sans message validé");
+});
+
+await test("revue : No go avec motif (profil gardé en CV-thèque, motif appris) ; Go ; fin de revue → Workflow réveillé", async () => {
+  events.length = 0;
+  tgSent.length = 0;
+  await tap(`rv:${rvApps.martin}:n2`);
+  const m = await rv.DB.prepare("SELECT state, nogo_reason FROM applications WHERE id = ?").bind(rvApps.martin).first();
+  assert(m.state === "nogo" && m.nogo_reason === "hors budget", JSON.stringify(m));
+  assert(tgSent.some((t) => t.method === "editMessageText" && /No go \(hors budget\)/.test(t.body.text)), "carte non mise à jour");
+  assert(!events.some((e) => e.type === "revue"), "revue close trop tôt");
+  await tap(`rv:${rvApps.martin}:go`);
+  assert((await rv.DB.prepare("SELECT state FROM applications WHERE id = ?").bind(rvApps.martin).first("state")) === "nogo", "double décision");
+  await tap(`rv:${rvApps.jean}:go`);
+  assert((await rv.DB.prepare("SELECT state FROM applications WHERE id = ?").bind(rvApps.jean).first("state")) === "go", "Go");
+  assert(events.some((e) => e.type === "revue"), JSON.stringify(events));
+  assert((await rv.DB.prepare("SELECT COUNT(*) AS n FROM candidates").first("n")) === 2, "profil No go supprimé");
+  const learned = await X.review.recentNogo(rv, rvMission);
+  assert(/hors budget/.test(learned) && /Chef de projet AMOA/.test(learned), learned);
+  aiLog.length = 0;
+  await X.mission.sourceFromWeb(rv, rvMission, 2);
+  const scoring = aiLog.find((l) => /notes l'adéquation/.test(l.system));
+  assert(scoring && /déjà écartés par le recruteur/.test(scoring.prompt) && /hors budget/.test(scoring.prompt), "les No go ne nourrissent pas le scoring");
+});
+
+let rvModel;
+await test("message : modèle {prenom} + {accroche}, 2 exemples personnalisés, choix du canal, modification", async () => {
+  await rv.DB.prepare("UPDATE applications SET state = 'go' WHERE id = ?").bind(rvApps.martin).run();
+  const mrow = await X.mission.getMission(rv, rvMission);
+  rvModel = await X.review.draftModel(rv, JSON.parse(mrow.fiche), "Zacharie R.");
+  assert(rvModel.modele.includes("{accroche}") && rvModel.modele.includes("{prenom}"), rvModel.modele);
+  tgSent.length = 0;
+  await X.review.sendMessageValidation(rv, rvMission, rvModel);
+  const msg = tgSent.find((t) => /Message de premier contact/.test(t.body.text ?? ""));
+  assert(msg && /Exemples personnalisés/.test(msg.body.text) && /Bonjour Jean,\nVotre parcours en AMOA/.test(msg.body.text) && /Bonjour Brigitte,/.test(msg.body.text), msg?.body.text);
+  assert(!/\{prenom\}\,\nVotre/.test(msg.body.text), "variables non remplacées dans les exemples");
+  const kb = msg.body.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
+  assert(kb.some((d) => d.endsWith(":ok")) && kb.some((d) => d.endsWith(":em")) && kb.some((d) => d.endsWith(":li")) && kb.some((d) => d.endsWith(":mod")), kb.join());
+  const vid = kb[0].split(":")[1];
+  events.length = 0;
+  await tap(`v:${vid}:mod`);
+  await rvPost({ message: { message_id: 60, chat: { id: 42 }, text: "mentionne le télétravail 3 jours" } });
+  assert(events.some((e) => e.type === "vmsg" && e.payload.action === "mod" && /télétravail/.test(e.payload.text)), JSON.stringify(events));
+  const modified = await X.review.draftModel(rv, JSON.parse(mrow.fiche), "Zacharie R.", "mentionne le télétravail 3 jours", rvModel);
+  assert(/télétravail/.test(modified.modele), modified.modele);
+  await X.review.sendMessageValidation(rv, rvMission, modified);
+  const vid2 = await rv.DB.prepare("SELECT id FROM validations WHERE kind = 'message' AND status = 'en_attente' ORDER BY created_at DESC LIMIT 1").first("id");
+  events.length = 0;
+  await tap(`v:${vid2}:em`);
+  assert(events.some((e) => e.type === "vmsg" && e.payload.action === "ok" && e.payload.mode === "email"), JSON.stringify(events));
+});
+
+await test("canal : auto / tout email / tout LinkedIn, repli sur l'autre canal si besoin", () => {
+  const p = X.review.pickChannel;
+  assert(p("auto", true, true, true) === "email" && p("auto", true, true, false) === "linkedin", "auto");
+  assert(p("linkedin", true, true, true) === "linkedin" && p("linkedin", true, false, true) === "email", "linkedin");
+  assert(p("email", false, true, true) === "linkedin" && p("email", false, false, true) === null, "email");
+  assert(X.review.renderModel("Bonjour {prenom},\n{accroche}\nSuite.", { prenom: "", accroche: "Phrase." }) === "Bonjour,\nPhrase.\nSuite.", "rendu sans prénom");
+});
+
+await test("Hunter : email trouvé pour un Go sans adresse, puis contact planifié par email ; quota respecté", async () => {
+  await X.db.setSetting(rv, "hunter_api_key", "hk", true);
+  await rv.DB.prepare("UPDATE applications SET state = 'nogo' WHERE id = ?").bind(rvApps.martin).run();
+  calls.length = 0;
+  const out = await X.review.applyMessage(rv, rvMission, rvModel, "auto");
+  assert(calls.includes("hunter") && lastHunter.company === "Banque Exemple SA" && lastHunter.full_name === "Jean Dupont", JSON.stringify(lastHunter));
+  assert(out.planned === 1 && out.email === 1, JSON.stringify(out));
+  const a = await rv.DB.prepare("SELECT a.state, a.channel, c.email FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?").bind(rvApps.jean).first();
+  assert(a.state === "a_contacter" && a.channel === "email" && a.email === "jean.dupont@banque-exemple.fr", JSON.stringify(a));
+  const m = await rv.DB.prepare("SELECT message_ok, channel_mode, message_template FROM missions WHERE id = ?").bind(rvMission).first();
+  assert(m.message_ok === 1 && m.channel_mode === "auto" && m.message_template.includes("{accroche}"), JSON.stringify(m));
+  await rv.DB.prepare("INSERT INTO settings (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify({ search: { monthly_limits: { hunter: 0 } } })).run();
+  calls.length = 0;
+  await X.hunter.findMissingEmails(rv, rvMission, [rvApps.martin]);
+  assert(!calls.includes("hunter"), "quota Hunter dépassé");
+  await rv.DB.prepare("DELETE FROM settings WHERE key = 'config'").run();
+});
+
+await test("premier contact : modèle validé + accroche personnalisée ; relance rédigée dans le même ton", async () => {
+  const tueRv = paris(2026, 10, 20, 8, 30);
+  await rv.DB.prepare("UPDATE applications SET next_action_at = ? WHERE id = ?").bind(tueRv.toISOString(), rvApps.jean).run();
+  aiLog.length = 0;
+  calls.length = 0;
+  const r = await X.outreach.processDueContacts(rv, new Date(tueRv.getTime() + 10 * 60_000));
+  assert(r.email === 1 && calls.includes("gmail_send"), JSON.stringify(r));
+  assert(aiLog.some((l) => /Tu écris UNE phrase/.test(l.system)) && !aiLog.some((l) => /messages de recrutement/.test(l.system)), "le premier contact doit suivre le modèle validé");
+  aiLog.length = 0;
+  const next = await rv.DB.prepare("SELECT next_action_at FROM applications WHERE id = ?").bind(rvApps.jean).first("next_action_at");
+  await X.outreach.processDueContacts(rv, new Date(Date.parse(next) + 60_000));
+  const relance = aiLog.find((l) => /messages de recrutement/.test(l.system));
+  assert(relance && /Premier message validé/.test(relance.prompt) && /Seriez-vous disponible/.test(relance.prompt), "relance sans le ton du modèle");
+});
+
+await test("Go après validation du message (sourcing continu) : Hunter + contact planifié aussitôt", async () => {
+  await rv.DB.prepare("UPDATE applications SET state = 'en_revue', channel = NULL WHERE id = ?").bind(rvApps.martin).run();
+  await tap(`rv:${rvApps.martin}:go`);
+  const a = await rv.DB.prepare("SELECT state, channel FROM applications WHERE id = ?").bind(rvApps.martin).first();
+  assert(a.state === "a_contacter" && a.channel === "email", JSON.stringify(a));
+});
+
+await test("sourcing continu : rotation de nouvelles requêtes, jamais deux fois la même", async () => {
+  const f = JSON.parse((await X.mission.getMission(rv, rvMission)).fiche);
+  const round3 = X.sourcing.buildBooleanQueries(f, 3, 50);
+  assert(round3.length >= 6, `${round3.length} variantes`);
+  calls.length = 0;
+  await X.mission.sourceFromWeb(rv, rvMission, 3);
+  await X.mission.sourceFromWeb(rv, rvMission, 3);
+  const reqs = (await rv.DB.prepare("SELECT detail FROM journal WHERE mission_id = ? AND action = 'recherche'").bind(rvMission).all()).results.map((r) => {
+    const d = JSON.parse(r.detail);
+    return `${d.site}|${d.requete}`;
+  });
+  assert(new Set(reqs).size === reqs.length, "requête rejouée");
+  assert(calls.filter((c) => c === "tavily").length >= 6, `${calls.filter((c) => c === "tavily").length} recherches`);
+  const pool = await X.mission.poolStats(rv, rvMission);
+  assert(typeof pool.active === "number" && pool.active >= 1, JSON.stringify(pool));
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

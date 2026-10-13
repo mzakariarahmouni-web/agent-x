@@ -12,6 +12,7 @@ export const SECRET_KEYS = [
   "tavily_api_key",
   "brave_api_key",
   "exa_api_key",
+  "hunter_api_key",
   "anthropic_api_key",
   "google_client_id",
   "google_client_secret",

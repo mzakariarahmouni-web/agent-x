@@ -18,4 +18,6 @@ export * as linkedin from "../worker/src/linkedin-api";
 export * as telegram from "../worker/src/telegram";
 export * as search from "../worker/src/search";
 export * as mail from "../worker/src/mail";
+export * as review from "../worker/src/review";
+export * as hunter from "../worker/src/hunter";
 export { default as worker } from "../worker/src/index";

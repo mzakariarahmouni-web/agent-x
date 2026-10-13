@@ -4,8 +4,9 @@ import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
+import { sendReviewCards } from "./review";
 import { addBusinessHours, frDate, nextSlot, type ScheduleConfig } from "./schedule";
-import { buildBooleanQueries, enrichFromPublicPages, scoreAndStore, searchCvtheque, sourceRound, type SourcedProfile } from "./sourcing";
+import { buildBooleanQueries, enrichFromPublicPages, scoreAndStore, searchCvtheque, sourceRound, type SourcedProfile, type SourcingRound } from "./sourcing";
 import { bot, type Button, notify, send, sendDocument } from "./telegram";
 import { createValidation, proposeRejection, validationButtons } from "./validations";
 
@@ -132,10 +133,10 @@ export async function sourceFromCvtheque(env: Env, id: string): Promise<number> 
 }
 
 /** F3 (2/2) : profils publics, recherche booléenne. Tour 1 toujours ; tour 2 seulement si le vivier est trop maigre. */
-export async function sourceFromWeb(env: Env, id: string, round: 1 | 2 = 1): Promise<number> {
+export async function sourceFromWeb(env: Env, id: string, round: SourcingRound = 1): Promise<number> {
   const cfg = await getConfig(env);
   const f = readFiche((await getMission(env, id)).fiche);
-  if (round === 2) {
+  if (round >= 2) {
     const good = await env.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = ? AND state = 'score' AND score >= ?")
       .bind(id, cfg.matching.contact_threshold)
       .first<{ n: number }>();
@@ -165,7 +166,20 @@ export async function enrichTopProfiles(env: Env, id: string, max = 10): Promise
   return enriched.length;
 }
 
-/** Sélection du vivier à contacter (meilleurs scores, au-dessus du seuil), planifié au prochain créneau. */
+/** Vivier de la mission : profils à revoir (au-dessus du seuil), écartés, et profils actifs (Go et au-delà). */
+export async function poolStats(env: Env, id: string): Promise<{ toReview: number; eliminated: number; active: number; pending: number }> {
+  const cfg = await getConfig(env);
+  const r = await env.DB.prepare(
+    `SELECT SUM(state = 'score' AND score >= ?) AS review, SUM(state = 'ecarte') AS eliminated, SUM(state = 'en_revue') AS pending,
+       SUM(state IN ('go','a_contacter','contacte','repondu','reponses_recues','qualifie','cv_formate','en_attente')) AS active
+     FROM applications WHERE mission_id = ?`,
+  )
+    .bind(cfg.matching.contact_threshold, id)
+    .first<{ review: number | null; eliminated: number | null; pending: number | null; active: number | null }>();
+  return { toReview: Math.min(r?.review ?? 0, cfg.mission.review_batch), eliminated: r?.eliminated ?? 0, active: r?.active ?? 0, pending: r?.pending ?? 0 };
+}
+
+/** Ancien mode sans revue (conservé pour les tests) : vivier au-dessus du seuil planifié directement. Le Workflow passe désormais par la revue Go / No go. */
 export async function planOutreach(env: Env, id: string, now = new Date()): Promise<{ planned: number; scored: number; eliminated: number }> {
   const cfg = await getConfig(env);
   const counts = await env.DB.prepare(
@@ -193,11 +207,9 @@ export async function planOutreach(env: Env, id: string, now = new Date()): Prom
 export async function reportSourcing(
   env: Env,
   id: string,
-  stats: { cvtheque: number; web: number; widened: number; enriched: number; planned: number; eliminated: number },
+  stats: { cvtheque: number; web: number; widened: number; enriched: number; toReview: number; eliminated: number },
 ): Promise<void> {
   const m = await getMission(env, id);
-  const cfg = await getConfig(env);
-  const slot = nextSlot(new Date(), "premier_contact", cfg.schedule as ScheduleConfig);
   const strict = buildBooleanQueries(readFiche(m.fiche), 1, 1)[0];
   const booleanLine = strict ? strict.boolean : "";
   await notify(
@@ -207,7 +219,7 @@ export async function reportSourcing(
       `CV-thèque : ${stats.cvtheque} profil(s) · Web public (booléen) : ${stats.web} profil(s)${stats.widened ? ` dont ${stats.widened} au tour élargi` : ""}`,
       `Pages publiques lues sans connexion : ${stats.enriched} profil(s) enrichi(s)`,
       `Écartés (critères éliminatoires) : ${stats.eliminated}`,
-      `À contacter : ${stats.planned}, à partir de ${frDate(slot)}`,
+      `À revoir : ${stats.toReview} profil(s) au-dessus du seuil → cartes Go / No go ci-dessous`,
       `Échéance shortlist : ${m.deadline_at ? frDate(new Date(m.deadline_at)) : "—"}`,
       booleanLine ? `\nRecherche booléenne principale :\n${booleanLine}` : "",
     ]
@@ -297,13 +309,14 @@ export async function applyEvolution(env: Env, id: string, instruction: string):
     learned.evolutions = [...(learned.evolutions ?? []), `${new Date().toISOString().slice(0, 10)} (${next.intitule}) : ${instruction.slice(0, 200)}`].slice(-30);
     await env.DB.prepare("UPDATE clients SET learned = ? WHERE id = ?").bind(JSON.stringify(learned), m.client_id).run();
   }
-  const planned = await planOutreach(env, id);
+  // Les nouveaux profils au-dessus du seuil repassent par ta revue (Go / No go) avant tout contact.
+  const cards = await sendReviewCards(env, id);
   await journal(env, "agent", "evolution", { instruction, version: m.version + 1, hors_perimetre: contacted.length }, { mission: id });
   return [
     `🔄 ${next.intitule} · version ${m.version + 1}`,
     ficheSummary(next),
     "",
-    `Vivier re-scoré : ${items.length} profil(s) · ${planned.planned} nouveau(x) contact(s) planifié(s).`,
+    `Vivier re-scoré : ${items.length} profil(s) · ${cards} nouveau(x) profil(s) à revoir (cartes envoyées).`,
     contacted.length ? `${contacted.length} candidat(s) déjà contacté(s) sortent du périmètre : ils restent en CV-thèque (${contacted.map((c) => c.full_name ?? "?").join(", ")}).` : "",
   ]
     .filter(Boolean)
@@ -319,7 +332,7 @@ export interface MissionProgress {
 export async function progress(env: Env, id: string): Promise<MissionProgress> {
   const m = await getMission(env, id);
   const r = await env.DB.prepare(
-    "SELECT SUM(state IN ('qualifie','cv_formate')) AS q, SUM(state IN ('a_contacter','contacte','repondu','reponses_recues','en_attente')) AS p FROM applications WHERE mission_id = ?",
+    "SELECT SUM(state IN ('qualifie','cv_formate')) AS q, SUM(state IN ('go','a_contacter','contacte','repondu','reponses_recues','en_attente')) AS p FROM applications WHERE mission_id = ?",
   )
     .bind(id)
     .first<{ q: number | null; p: number | null }>();

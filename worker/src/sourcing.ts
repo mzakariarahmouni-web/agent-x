@@ -3,6 +3,7 @@ import { journal, parseJson } from "./db";
 import type { Env } from "./env";
 import type { Fiche } from "./fiche";
 import { evaluate, type MatchResult, type Profile, type SubScores } from "./matching";
+import { recentNogo } from "./review";
 import { isOptedOut } from "./rgpd";
 import { readPublicPages, type SearchHit, type SearchQuery, webSearch } from "./search";
 import { newId } from "./security";
@@ -30,7 +31,7 @@ const orGroup = (terms: string[]) => {
 export const EXCLUSIONS = '-"offre d\'emploi" -recrute -recrutement -"we are hiring" -jobs';
 
 export interface BooleanPlan {
-  round: 1 | 2;
+  round: SourcingRound;
   queries: SearchQuery[];
 }
 
@@ -38,7 +39,9 @@ export interface BooleanPlan {
  * Chaînes booléennes de la mission, de la plus précise à la plus large.
  * Tour 1 : strict, moyen, freelance, Malt, GitHub. Tour 2 (si le vivier est maigre) : périmètre élargi.
  */
-export function buildBooleanQueries(f: Fiche, round: 1 | 2, max: number): SearchQuery[] {
+export type SourcingRound = 1 | 2 | 3;
+
+export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number): SearchQuery[] {
   const titles = [f.intitule, ...f.niveau_elargi.intitules_proches.slice(0, 3)];
   const must = f.competences_obligatoires.slice(0, 3);
   const loc = f.localisation ? f.localisation.split(/[,(]/)[0].trim() : "";
@@ -52,6 +55,12 @@ export function buildBooleanQueries(f: Fiche, round: 1 | 2, max: number): Search
     q.push({ label: "compétences", domain: "linkedin.com/in", boolean: join(...must.map(quote), orGroup([...f.competences_souhaitees.slice(0, 3)]), locPart, EXCLUSIONS) });
     q.push({ label: "malt", domain: "malt.fr/profile", boolean: join(orGroup(titles.slice(0, 2)), ...must.slice(0, 2).map(quote)) });
     if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud|architecte/i.test(f.intitule)) q.push({ label: "github", domain: "github.com", boolean: join(...must.slice(0, 2).map(quote), loc || "France") });
+  } else if (round === 3) {
+    // Sourcing continu : rotation de variantes (un intitulé à la fois, synonymes, compétence par compétence, autres sites).
+    const wide = [...new Set([...titles, ...f.synonymes.slice(0, 6)])];
+    for (const t of wide) q.push({ label: `variante ${t}`, domain: "linkedin.com/in", boolean: join(quote(t), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
+    for (const s of [...must, ...f.competences_souhaitees.slice(0, 3)]) q.push({ label: `compétence ${s}`, domain: "linkedin.com/in", boolean: join(orGroup(titles), quote(s), locPart || '(France OR remote)', EXCLUSIONS) });
+    for (const t of wide.slice(0, 3)) q.push({ label: `malt ${t}`, domain: "malt.fr/profile", boolean: join(quote(t), must[0] ? quote(must[0]) : "", loc) });
   } else {
     const wideTitles = [...titles, ...f.synonymes.slice(0, 4)];
     const adj = f.niveau_elargi.competences_adjacentes.slice(0, 4);
@@ -93,7 +102,7 @@ export async function searchCvtheque(env: Env, f: Fiche, limit = 30): Promise<{ 
 const EXTRACT_SYSTEM = `Tu extrais des profils de personnes à partir de résultats de recherche web publics.
 Ignore les offres d'emploi, les entreprises, les articles et les pages qui ne décrivent pas une personne précise.
 N'invente aucune information : un champ inconnu vaut null ou [].
-Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "" }] }`;
+Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "" }] }`;
 
 export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: string): Promise<SourcedProfile[]> {
   if (!hits.length) return [];
@@ -124,7 +133,7 @@ export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: s
 }
 
 /** Sous-scores de l'IA (modèle économique) pour un lot de profils ; le code calcule ensuite le score final. */
-export async function subScores(env: Env, f: Fiche, profiles: Profile[], missionId?: string): Promise<Partial<SubScores>[]> {
+export async function subScores(env: Env, f: Fiche, profiles: Profile[], missionId?: string, learned = ""): Promise<Partial<SubScores>[]> {
   if (!profiles.length) return [];
   const brief = {
     intitule: f.intitule,
@@ -141,7 +150,7 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
     system: `Tu notes l'adéquation de profils à une mission, de 0 à 100 par critère, sans complaisance.
 Une information absente du profil vaut 50 (inconnu), pas 0.
 Réponds uniquement en JSON : { "scores": [{ "index": 0, "competences_souhaitees": 0, "seniorite": 0, "secteur": 0, "langues": 0, "soft_skills": 0 }] }`,
-    prompt: `Mission : ${JSON.stringify(brief)}\n\nProfils :\n${profiles
+    prompt: `Mission : ${JSON.stringify(brief)}${learned ? `\n\nProfils déjà écartés par le recruteur sur cette mission (note plus bas les profils semblables, pour le même motif) :\n${learned}` : ""}\n\nProfils :\n${profiles
       .map((p, i) => `[${i}] ${JSON.stringify({ intitule: p.intitule, competences: p.competences, annees_experience: p.annees_experience, secteurs: p.secteurs, langues: p.langues, resume: p.resume?.slice(0, 400) })}`)
       .join("\n")}`,
     json: true,
@@ -199,9 +208,11 @@ export async function scoreAndStore(
   tjmTolerance: number,
 ): Promise<ScoredCandidate[]> {
   const out: ScoredCandidate[] = [];
+  // Apprentissage : les No go du recruteur (avec motif) orientent la notation des profils suivants.
+  const learned = items.length ? await recentNogo(env, missionId) : "";
   for (let i = 0; i < items.length; i += 10) {
     const batch = items.slice(i, i + 10);
-    const subs = await subScores(env, f, batch.map((b) => b.profile), missionId);
+    const subs = await subScores(env, f, batch.map((b) => b.profile), missionId, learned);
     const stmts: D1PreparedStatement[] = [];
     batch.forEach((b, j) => {
       const match = evaluate(f, b.profile, subs[j] ?? {}, weights, tjmTolerance);
@@ -229,10 +240,14 @@ export async function scoreAndStore(
 }
 
 /** Un tour de recherche booléenne : requêtes, extraction, dédoublonnage, CV-thèque. */
-export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 1 | 2, maxQueries: number): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
+export async function sourceRound(env: Env, missionId: string, f: Fiche, round: SourcingRound, maxQueries: number): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
   const seen = new Set<string>();
   const found: { candidateId: string; profile: SourcedProfile }[] = [];
-  for (const q of buildBooleanQueries(f, round, maxQueries)) {
+  // Une requête déjà lancée pour la mission n'est jamais rejouée (le sourcing continu avance dans la liste).
+  const { results: past } = await env.DB.prepare("SELECT detail FROM journal WHERE mission_id = ? AND action = 'recherche'").bind(missionId).all<{ detail: string | null }>();
+  const used = new Set((past ?? []).map((r) => parseJson<{ requete?: string; site?: string }>(r.detail, {})).map((d) => `${d.site ?? ""}|${d.requete ?? ""}`));
+  const queries = buildBooleanQueries(f, round, 50).filter((q) => !used.has(`${q.domain}|${q.boolean}`)).slice(0, maxQueries);
+  for (const q of queries) {
     const { engine, hits } = await webSearch(env, q, missionId);
     const fresh = hits.filter((h) => !seen.has(h.url.split("?")[0]));
     fresh.forEach((h) => seen.add(h.url.split("?")[0]));
@@ -255,7 +270,7 @@ export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQue
 const PAGE_SYSTEM = `Tu lis la page publique d'un professionnel (profil LinkedIn public, Malt ou GitHub) et tu en extrais un profil fidèle.
 N'invente rien ; un champ absent vaut null ou [].
 « resume » : 3 à 6 lignes factuelles sur les expériences (postes, secteurs, durées, réalisations chiffrées s'il y en a).
-Réponds uniquement en JSON : { "nom": "", "intitule": "", "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }`;
+Réponds uniquement en JSON : { "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }`;
 
 /**
  * Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa),

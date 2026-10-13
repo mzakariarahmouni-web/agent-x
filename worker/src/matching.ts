@@ -8,6 +8,7 @@ import type { Fiche } from "./fiche";
 export interface Profile {
   nom?: string;
   intitule?: string;
+  entreprise?: string;
   localisation?: string;
   competences?: string[];
   annees_experience?: number | null;

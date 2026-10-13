@@ -3,9 +3,9 @@ import type { Env } from "./env";
 import { newId } from "./security";
 import { bot, type Button, send } from "./telegram";
 
-/** Les 4 validations Telegram : 1 fiche, 2 rejet définitif, 3+4 shortlist et envoi au client. */
+/** Validations Telegram : 1 fiche, 2 rejet définitif, 3+4 shortlist et envoi au client, plus le message de premier contact. */
 
-export type ValidationKind = "fiche" | "rejet" | "shortlist";
+export type ValidationKind = "fiche" | "rejet" | "shortlist" | "message";
 
 export interface Validation {
   id: string;

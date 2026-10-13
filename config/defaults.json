@@ -28,7 +28,7 @@
   },
   "search": {
     "chain": ["tavily", "brave", "exa"],
-    "monthly_limits": { "tavily": 1000, "brave": 950, "exa": 900 },
+    "monthly_limits": { "tavily": 1000, "brave": 950, "exa": 900, "hunter": 25 },
     "queries_per_mission": 12,
     "results_per_query": 10
   },
@@ -59,7 +59,9 @@
     "pool_target": 20,
     "shortlist_size": 4,
     "max_clarifying_questions": 3,
-    "validation_reminder_hours": 2
+    "validation_reminder_hours": 2,
+    "review_batch": 20,
+    "continuous_sourcing_every_hours": 6
   },
   "matching": {
     "weights": { "competences_souhaitees": 30, "seniorite": 25, "secteur": 20, "langues": 10, "soft_skills": 15 },
