@@ -91,7 +91,7 @@ async function gemini(env: Env, key: string, model: string, req: ChatRequest, ti
   return { text, units: data.usageMetadata?.candidatesTokenCount ?? 0 };
 }
 
-async function groq(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number, jsonMode = true): Promise<ChatResult> {
+async function groq(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number, jsonMode = true, lowReasoning = true): Promise<ChatResult> {
   type R = { choices?: { message?: { content?: string } }[]; usage?: { completion_tokens?: number } };
   let data: R;
   try {
@@ -110,7 +110,8 @@ async function groq(env: Env, key: string, model: string, req: ChatRequest, time
           { role: "system", content: req.system },
           { role: "user", content: req.prompt },
         ],
-        ...(/gpt-oss/.test(model) ? { reasoning_effort: "low" } : {}),
+        // Réflexion courte (gpt-oss) ou désactivée (Qwen) : moins de jetons, donc moins de refus « limite par minute ».
+        ...(lowReasoning && /gpt-oss/.test(model) ? { reasoning_effort: "low" } : lowReasoning && /qwen/i.test(model) ? { reasoning_effort: "none" } : {}),
         ...(req.json && jsonMode ? { response_format: { type: "json_object" } } : {}),
       }),
     },
@@ -118,7 +119,9 @@ async function groq(env: Env, key: string, model: string, req: ChatRequest, time
   );
   } catch (e) {
     // Mode JSON strict refusé par Groq : on réessaie en texte libre, le JSON est extrait ensuite.
-    if (jsonMode && req.json && e instanceof HttpError && e.status === 400 && /json/i.test(e.message)) return groq(env, key, model, req, timeoutMs, false);
+    if (jsonMode && req.json && e instanceof HttpError && e.status === 400 && /json/i.test(e.message)) return groq(env, key, model, req, timeoutMs, false, lowReasoning);
+    // Réglage de réflexion non pris en charge par ce modèle : nouvel essai sans.
+    if (lowReasoning && e instanceof HttpError && e.status === 400 && /reasoning/i.test(e.message)) return groq(env, key, model, req, timeoutMs, jsonMode, false);
     throw e;
   }
   const text = data.choices?.[0]?.message?.content ?? "";

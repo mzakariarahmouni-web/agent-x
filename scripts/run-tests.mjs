@@ -477,6 +477,15 @@ await test("IA : Groq refuse le mode JSON strict → nouvel essai en texte libre
   groqMode = "ok";
   assert(r.provider.startsWith("groq:") && !lastGroq.response_format && lastGroq.reasoning_effort === "low", JSON.stringify(lastGroq));
 });
+await test("IA : limite « par minute » → court nouvel essai, jamais d'exclusion jusqu'à minuit ; limite du jour → exclusion", () => {
+  const { HttpError } = X.outbound;
+  const perMin = new HttpError(429, "groq", 'Rate limit reached for model qwen in organization org_x on tokens per minute (TPM): Limit 6000. Please try again in 7.2s.');
+  const perDay = new HttpError(429, "groq", "Rate limit reached on tokens per day (TPD): Limit 500000. Please try again in 1h2m.");
+  assert(X.router.shortRetryDelay(perMin) === 7700 && !X.router.isDailyLimit(perMin.message), "par minute");
+  assert(X.router.shortRetryDelay(perDay) === null && X.router.isDailyLimit(perDay.message), "par jour");
+  assert(X.router.shortRetryDelay(new HttpError(503, "gemini", "This model is currently experiencing high demand")) === 8000, "surcharge");
+});
+
 await test("IA : extraction du JSON entouré de texte ou de ```json", () => {
   assert(X.router.extractJson('Voici :\n```json\n{"a":1}\n```').a === 1, "bloc");
   assert(X.router.extractJson('ok {"b":[1,2]} fin').b.length === 2, "texte");

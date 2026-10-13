@@ -4,11 +4,11 @@
     "families": {
       "jugement": {
         "label": "Jugement et rédaction (fiche, impact, notation, CV)",
-        "chain": ["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-120b", "workersai:@cf/nvidia/nemotron-3-120b-a12b"]
+        "chain": ["gemini:gemini-3.8-flash", "groq:openai/gpt-oss-120b", "gemini:gemini-3.5-flash-lite", "workersai:@cf/nvidia/nemotron-3-120b-a12b", "workersai:@cf/meta/llama-3.3-70b-instruct-fp8-fast"]
       },
       "volume": {
         "label": "Volume (scoring, messages, résumés)",
-        "chain": ["groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite", "workersai:@cf/google/gemma-4-26b-a4b-it"]
+        "chain": ["groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite", "groq:openai/gpt-oss-120b", "gemini:gemini-3.8-flash", "workersai:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "workersai:@cf/google/gemma-4-26b-a4b-it"]
       },
       "cv": {
         "label": "Rédaction du CV client",

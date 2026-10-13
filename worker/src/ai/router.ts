@@ -46,6 +46,38 @@ export function extractJson<T>(text: string): T {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Limite journalière (et non à la minute) atteinte ? */
+export function isDailyLimit(message: string): boolean {
+  return /per day|\b(TPD|RPD)\b|daily|quota exceeded for quota metric.*per_day/i.test(message) && !/per minute|\b(TPM|RPM)\b/i.test(message);
+}
+
+/** Délai d'attente conseillé pour une erreur passagère (limite à la minute, surcharge), sinon null. */
+export function shortRetryDelay(e: unknown): number | null {
+  if (!(e instanceof HttpError)) return null;
+  if (e.status === 429 && !isDailyLimit(e.message)) {
+    const m = /try again in (?:(\d+)m)?([\d.]+)s/i.exec(e.message);
+    if (!m) return null;
+    const s = Number(m[1] ?? 0) * 60 + Number(m[2]);
+    return s <= 25 ? Math.ceil(s * 1000) + 500 : null;
+  }
+  if (e.status === 503 || /high demand|overloaded|UNAVAILABLE/i.test(e.message)) return 8_000;
+  return null;
+}
+
+/** Un nouvel essai sur le même fournisseur après une erreur passagère, avant de passer au relais suivant. */
+async function callWithShortRetry<R>(fn: () => Promise<R>): Promise<R> {
+  try {
+    return await fn();
+  } catch (e) {
+    const wait = shortRetryDelay(e);
+    if (wait == null) throw e;
+    await sleep(wait);
+    return fn();
+  }
+}
+
 function parseLink(link: string): { provider: ProviderName; model: string } {
   const i = link.indexOf(":");
   return { provider: link.slice(0, i) as ProviderName, model: link.slice(i + 1) };
@@ -92,7 +124,7 @@ export async function ai<T = unknown>(env: Env, call: AiCall<T>): Promise<AiResu
       continue;
     }
     try {
-      const res = await callProvider(env, keys, provider, model, call, cfg.ai.timeout_ms);
+      const res = await callWithShortRetry(() => callProvider(env, keys, provider, model, call, cfg.ai.timeout_ms));
       let data: T;
       if (call.json) {
         data = extractJson<T>(res.text);
@@ -106,8 +138,9 @@ export async function ai<T = unknown>(env: Env, call: AiCall<T>): Promise<AiResu
     } catch (e) {
       const err = e as Error;
       const status = e instanceof HttpError ? e.status : 0;
-      // Clé refusée ou modèle réservé : écarté jusqu'à minuit. Quota (429) : idem après 2 refus. Le reste : coupe-circuit.
-      const untilMidnight = status === 401 || status === 403 || (status === 429 && st.errors >= 1);
+      // Clé refusée ou modèle réservé : écarté jusqu'à minuit. Quota du jour épuisé (429 « per day ») : idem.
+      // Limite à la minute ou surcharge passagère : simple coupe-circuit de quelques minutes.
+      const untilMidnight = status === 401 || status === 403 || (status === 429 && isDailyLimit(err.message));
       await recordFailure(env, link, err.message, { breakerErrors: cfg.ai.breaker.errors, openMinutes: cfg.ai.breaker.open_minutes, untilMidnight });
       attempts.push(`${link} : ${err.message.slice(0, 120)}`);
       await journal(env, "ia", "relais", { famille: call.family, tache: call.label, fournisseur: link, erreur: err.message.slice(0, 200) }, { mission: call.missionId });
