@@ -97,11 +97,11 @@ async function savePrefs(env: Env, req: Request): Promise<Response> {
   return json({ ok: true });
 }
 
-async function telegramStatus(env: Env): Promise<{ linked: boolean; username: string | null; link: string | null }> {
+async function telegramStatus(env: Env): Promise<{ linked: boolean; username: string | null; link: string | null; code: string | null }> {
   const linked = !!(await getSetting(env, "telegram_chat_id"));
   const username = await getSetting(env, "telegram_username");
-  const link = !linked && username ? `https://t.me/${username}?start=${(await derivedSecret(env.ADMIN_TOKEN!, "telegram-link")).slice(0, 16)}` : null;
-  return { linked, username, link };
+  const code = !linked && username ? (await derivedSecret(env.ADMIN_TOKEN!, "telegram-link")).slice(0, 16) : null;
+  return { linked, username, link: code ? `https://t.me/${username}?start=${code}` : null, code };
 }
 
 async function linkTelegram(env: Env, req: Request): Promise<Response> {
@@ -111,7 +111,7 @@ async function linkTelegram(env: Env, req: Request): Promise<Response> {
   const { username } = await setupBot(env, token, `${origin}/telegram/webhook`, await derivedSecret(env.ADMIN_TOKEN!, "telegram"));
   await setSetting(env, "telegram_username", username);
   const code = (await derivedSecret(env.ADMIN_TOKEN!, "telegram-link")).slice(0, 16);
-  return json({ ok: true, username, link: `https://t.me/${username}?start=${code}` });
+  return json({ ok: true, username, code, link: `https://t.me/${username}?start=${code}` });
 }
 
 /** Petit appel réel pour vérifier une clé (IA ou recherche). */

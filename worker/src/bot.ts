@@ -240,18 +240,25 @@ export async function handleTelegram(env: Env, req: Request, ctx: ExecutionConte
   const chatId = String(msg.chat.id);
   const linked = await getSetting(env, "telegram_chat_id");
 
-  // Liaison : /start <code> avec le code affiché dans la page de configuration.
-  const start = /^\/start\s+(\S+)/.exec(update.message?.text ?? "");
-  if (start) {
+  // Liaison : le code affiché dans la page de configuration, reçu par le lien (/start <code>) ou collé tel quel.
+  const typed = (update.message?.text ?? "").trim().replace(/^\/start(?:@\w+)?\s*/, "");
+  if (typed) {
     const code = (await derivedSecret(env.ADMIN_TOKEN, "telegram-link")).slice(0, 16);
-    if (safeEqual(start[1], code)) {
+    if (safeEqual(typed, code)) {
       await setSetting(env, "telegram_chat_id", chatId);
       await send(env, { token, chatId }, `✅ Agent X est relié à cette conversation.\n\n${HELP}`);
       return new Response("ok");
     }
   }
   if (!linked || linked !== chatId) {
-    if (update.message) await send(env, { token, chatId }, "Ce bot est privé. Reliez-le depuis la page de configuration d'Agent X.").catch(() => undefined);
+    if (update.message)
+      await send(
+        env,
+        { token, chatId },
+        linked
+          ? "Ce bot est privé."
+          : "🔐 Pour relier Agent X à cette conversation, envoie ici le code de liaison affiché dans la page de configuration (section 3).",
+      ).catch(() => undefined);
     return new Response("ok");
   }
   const b: Bot = { token, chatId };

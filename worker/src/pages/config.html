@@ -100,7 +100,7 @@ async function load() {
   </section>
 
   <section><h2>3. Telegram</h2><div class="muted">Après avoir enregistré le jeton du bot, reliez-le à votre conversation.</div>
-    <div class="row"><button id="tg">${s.telegram.linked ? "Relier à nouveau" : "Relier mon Telegram"}</button><span id="tgOut" class="muted">${s.telegram.linked ? "✓ relié à @" + s.telegram.username : s.telegram.link ? `Bot prêt. Ouvrez ce lien puis touchez « Démarrer » : <a href="${s.telegram.link}" target="_blank" rel="noopener">${s.telegram.link}</a>` : ""}</span></div>
+    <div class="row"><button id="tg">${s.telegram.linked ? "Relier à nouveau" : "Relier mon Telegram"}</button><span id="tgOut" class="muted">${s.telegram.linked ? "✓ relié à @" + s.telegram.username : s.telegram.link ? `Bot prêt. Ouvrez <a href="${s.telegram.link}" target="_blank" rel="noopener">@${s.telegram.username}</a> et envoyez-lui ce code de liaison : <code>${s.telegram.code}</code>` : ""}</span></div>
   </section>
 
   <section><h2>4. Gmail</h2><div class="muted">Les emails partent de votre boîte, un par un, aux bons créneaux. URI de redirection à déclarer chez Google : <code>${callback}</code></div>
@@ -139,7 +139,7 @@ async function load() {
   $("#tg").addEventListener("click", async () => {
     const d = await api("/api/admin/telegram", {});
     if (!d.ok) return toast(d.error);
-    $("#tgOut").innerHTML = `Ouvrez ce lien et touchez « Démarrer » : <a href="${d.link}" target="_blank" rel="noopener">${d.link}</a>`;
+    $("#tgOut").innerHTML = `Ouvrez <a href="${d.link}" target="_blank" rel="noopener">@${d.username}</a> et envoyez-lui ce code de liaison : <code>${d.code}</code>`;
   });
   $("#savePrefs").addEventListener("click", async () => {
     const d = await api("/api/admin/prefs", { sender_default: $("#sender").value, premium_cv: $("#premium").checked, cv_brand: { font: $("#font").value, color: $("#color").value, show_tjm: $("#tjm").checked } });

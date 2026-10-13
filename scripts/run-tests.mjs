@@ -611,8 +611,13 @@ await test("Telegram : liaison par /start <code>, inconnu refusé, bouton de val
   const ctx = { waitUntil() {} };
   const post = (update, s = secret) => X.worker.fetch(new Request("https://x/telegram/webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": s }, body: JSON.stringify(update) }), env, ctx);
   assert((await post({}, "faux")).status === 403, "secret non vérifié");
+  await X.db.deleteSetting(env, "telegram_chat_id");
+  await post({ message: { message_id: 1, chat: { id: 98 }, text: "/start" } });
+  assert(!(await X.db.getSetting(env, "telegram_chat_id")), "liaison sans code");
+  await post({ message: { message_id: 1, chat: { id: 98 }, text: code } });
+  assert((await X.db.getSetting(env, "telegram_chat_id")) === "98", "liaison par code collé");
   await post({ message: { message_id: 1, chat: { id: 99 }, text: "/start " + code } });
-  assert((await X.db.getSetting(env, "telegram_chat_id")) === "99", "liaison");
+  assert((await X.db.getSetting(env, "telegram_chat_id")) === "99", "liaison par lien");
   tgSent.length = 0;
   await post({ message: { message_id: 2, chat: { id: 7 }, text: "bonjour" } });
   assert(tgSent.some((m) => /privé/.test(m.body.text ?? "") && m.body.chat_id === "7"), "intrus non refusé");
