@@ -8,6 +8,7 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "typecheck": "tsc -p worker --noEmit",
+    "build:extension": "node scripts/build-extension.mjs",
     "test": "tsc -p worker --noEmit && node scripts/run-tests.mjs"
   },
   "devDependencies": {

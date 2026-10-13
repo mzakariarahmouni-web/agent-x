@@ -7,6 +7,7 @@ import {
   applyEvolution,
   applyFicheChange,
   buildShortlist,
+  enrichTopProfiles,
   getMission,
   markPresented,
   planOutreach,
@@ -111,10 +112,14 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
 
     // F3 : CV-thèque, puis web public, puis planification des contacts (F4 est exécuté par le cron, aux créneaux).
     const fromCv = await this.resilient(step, "sourcing:cvtheque", () => sourceFromCvtheque(env, id));
-    const fromWeb = await this.resilient(step, "sourcing:web", () => sourceFromWeb(env, id));
+    const fromWeb = await this.resilient(step, "sourcing:web", () => sourceFromWeb(env, id, 1));
+    // Vivier trop maigre : tour élargi (synonymes, intitulés voisins, compétences adjacentes).
+    const widened = await this.resilient(step, "sourcing:web-elargi", () => sourceFromWeb(env, id, 2));
+    // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
+    const enriched = await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id));
     const plan = await step.do("contacts:planification", () => planOutreach(env, id));
     await step.do("sourcing:rapport", async () => {
-      await reportSourcing(env, id, { cvtheque: fromCv, web: fromWeb, planned: plan.planned, eliminated: plan.eliminated });
+      await reportSourcing(env, id, { cvtheque: fromCv, web: fromWeb + widened, widened, enriched, planned: plan.planned, eliminated: plan.eliminated });
       return true;
     });
 

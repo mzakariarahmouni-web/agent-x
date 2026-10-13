@@ -5,7 +5,7 @@ import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
 import { addBusinessHours, frDate, nextSlot, type ScheduleConfig } from "./schedule";
-import { scoreAndStore, searchCvtheque, sourcePublic, type SourcedProfile } from "./sourcing";
+import { buildBooleanQueries, enrichFromPublicPages, scoreAndStore, searchCvtheque, sourceRound, type SourcedProfile } from "./sourcing";
 import { bot, type Button, notify, send, sendDocument } from "./telegram";
 import { createValidation, proposeRejection, validationButtons } from "./validations";
 
@@ -131,13 +131,38 @@ export async function sourceFromCvtheque(env: Env, id: string): Promise<number> 
   return items.length;
 }
 
-/** F3 (2/2) : profils publics (recherche web). */
-export async function sourceFromWeb(env: Env, id: string): Promise<number> {
+/** F3 (2/2) : profils publics, recherche booléenne. Tour 1 toujours ; tour 2 seulement si le vivier est trop maigre. */
+export async function sourceFromWeb(env: Env, id: string, round: 1 | 2 = 1): Promise<number> {
   const cfg = await getConfig(env);
   const f = readFiche((await getMission(env, id)).fiche);
-  const items = await sourcePublic(env, id, f, cfg.search.queries_per_mission);
+  if (round === 2) {
+    const good = await env.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = ? AND state = 'score' AND score >= ?")
+      .bind(id, cfg.matching.contact_threshold)
+      .first<{ n: number }>();
+    if ((good?.n ?? 0) >= cfg.mission.pool_target) return 0;
+  }
+  const items = await sourceRound(env, id, f, round, Math.ceil(cfg.search.queries_per_mission / 2));
   await scoreAndStore(env, id, f, items, cfg.matching.weights, cfg.matching.tjm_tolerance);
   return items.length;
+}
+
+/**
+ * F3 (lecture) : pages publiques des meilleurs profils lues sans connexion, profils enrichis puis re-scorés.
+ * Seuls les profils proches du seuil ou au-dessus sont lus, pour économiser les quotas.
+ */
+export async function enrichTopProfiles(env: Env, id: string, max = 10): Promise<number> {
+  const cfg = await getConfig(env);
+  const f = readFiche((await getMission(env, id)).fiche);
+  const { results } = await env.DB.prepare(
+    `SELECT a.candidate_id, COALESCE(c.linkedin_url, c.source_url) AS url FROM applications a JOIN candidates c ON c.id = a.candidate_id
+     WHERE a.mission_id = ? AND a.state = 'score' AND a.score >= ? AND COALESCE(c.linkedin_url, c.source_url) IS NOT NULL
+     ORDER BY a.score DESC LIMIT ?`,
+  )
+    .bind(id, Math.max(0, cfg.matching.contact_threshold - 10), max)
+    .all<{ candidate_id: string; url: string }>();
+  const enriched = await enrichFromPublicPages(env, id, (results ?? []).map((r) => ({ candidateId: r.candidate_id, url: r.url })));
+  if (enriched.length) await scoreAndStore(env, id, f, enriched, cfg.matching.weights, cfg.matching.tjm_tolerance);
+  return enriched.length;
 }
 
 /** Sélection du vivier à contacter (meilleurs scores, au-dessus du seuil), planifié au prochain créneau. */
@@ -165,13 +190,30 @@ export async function planOutreach(env: Env, id: string, now = new Date()): Prom
   return { planned: stmts.length, scored: counts?.scored ?? 0, eliminated: counts?.eliminated ?? 0 };
 }
 
-export async function reportSourcing(env: Env, id: string, stats: { cvtheque: number; web: number; planned: number; eliminated: number }): Promise<void> {
+export async function reportSourcing(
+  env: Env,
+  id: string,
+  stats: { cvtheque: number; web: number; widened: number; enriched: number; planned: number; eliminated: number },
+): Promise<void> {
   const m = await getMission(env, id);
   const cfg = await getConfig(env);
   const slot = nextSlot(new Date(), "premier_contact", cfg.schedule as ScheduleConfig);
+  const strict = buildBooleanQueries(readFiche(m.fiche), 1, 1)[0];
+  const booleanLine = strict ? strict.boolean : "";
   await notify(
     env,
-    `🔎 ${m.title} · sourcing terminé\nCV-thèque : ${stats.cvtheque} profil(s) · Web public : ${stats.web} profil(s)\nÉcartés (critères éliminatoires) : ${stats.eliminated}\nÀ contacter : ${stats.planned}, à partir de ${frDate(slot)}\nÉchéance shortlist : ${m.deadline_at ? frDate(new Date(m.deadline_at)) : "—"}`,
+    [
+      `🔎 ${m.title} · sourcing terminé`,
+      `CV-thèque : ${stats.cvtheque} profil(s) · Web public (booléen) : ${stats.web} profil(s)${stats.widened ? ` dont ${stats.widened} au tour élargi` : ""}`,
+      `Pages publiques lues sans connexion : ${stats.enriched} profil(s) enrichi(s)`,
+      `Écartés (critères éliminatoires) : ${stats.eliminated}`,
+      `À contacter : ${stats.planned}, à partir de ${frDate(slot)}`,
+      `Échéance shortlist : ${m.deadline_at ? frDate(new Date(m.deadline_at)) : "—"}`,
+      booleanLine ? `\nRecherche booléenne principale :\n${booleanLine}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    booleanLine ? [[{ text: "📋 Copier la recherche booléenne", copy: booleanLine }]] : [],
   );
 }
 

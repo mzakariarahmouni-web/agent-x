@@ -1,7 +1,10 @@
 const $ = (s) => document.querySelector(s);
 const send = (msg) => new Promise((res) => chrome.runtime.sendMessage(msg, (r) => res(r || { ok: false, error: "pas de réponse" })));
 
+const DEFAULTS = window.AGENT_X_DEFAULTS || {};
 chrome.storage.local.get(["url", "token"]).then(({ url, token }) => {
+  url = url || DEFAULTS.url;
+  token = token || DEFAULTS.token;
   $("#url").value = url || "";
   $("#token").value = token || "";
   if (!url || !token) $("#cfg").open = true;

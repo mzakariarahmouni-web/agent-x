@@ -2,7 +2,7 @@ import { ai } from "./ai/router";
 import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
 import { type Fiche, readFiche } from "./fiche";
-import { gmailReady, repliesFrom, sendEmail } from "./gmail";
+import { mailReady, mailRepliesFrom, sendMail } from "./mail";
 import type { SourcedProfile } from "./sourcing";
 import { addBusinessHours, nextSlot, type ScheduleConfig } from "./schedule";
 import { newId } from "./security";
@@ -80,7 +80,7 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
   const sched = cfg.schedule as ScheduleConfig;
   const steps = cfg.outreach.steps;
   const publicUrl = (await getSetting(env, "public_url")) || env.PUBLIC_URL || "";
-  const mailOk = await gmailReady(env);
+  const mailOk = await mailReady(env);
   const defaultSender = (await getSetting(env, "sender_default")) || "Le recruteur";
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.mission_id, a.candidate_id, a.contact_step, a.channel, a.token, c.profile, c.email, c.linkedin_url, m.fiche, m.sender_name, m.title
@@ -126,7 +126,7 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
     const draft = await draftMessage(env, f, p, r.contact_step, channel, sender, cfg.outreach.max_chars, r.mission_id);
     const body = draft.message + footer(channel, publicUrl, token, sender);
     if (channel === "email") {
-      await sendEmail(env, sender, r.email!, draft.objet || f.intitule, body);
+      await sendMail(env, sender, r.email!, draft.objet || f.intitule, body);
       await journal(env, "contact", "email_envoye", { etape: r.contact_step }, { mission: r.mission_id, candidate: r.candidate_id });
       counts.email++;
     } else {
@@ -162,13 +162,13 @@ export async function notifyLinkedinQueue(env: Env, added: number): Promise<void
 
 /** Réponses reçues par email (toutes les 15 minutes) : le candidat passe en « répondu ». */
 export async function checkEmailReplies(env: Env): Promise<number> {
-  if (!(await gmailReady(env))) return 0;
+  if (!(await mailReady(env))) return 0;
   const { results } = await env.DB.prepare(
     `SELECT a.id, lower(c.email) AS email, a.mission_id, c.full_name, m.title FROM applications a JOIN candidates c ON c.id = a.candidate_id JOIN missions m ON m.id = a.mission_id
      WHERE a.state = 'contacte' AND a.channel = 'email' AND c.email IS NOT NULL`,
   ).all<{ id: string; email: string; mission_id: string; full_name: string | null; title: string }>();
   const rows = results ?? [];
-  const replied = await repliesFrom(env, [...new Set(rows.map((r) => r.email))]);
+  const replied = await mailRepliesFrom(env, [...new Set(rows.map((r) => r.email))]);
   let n = 0;
   for (const r of rows.filter((x) => replied.has(x.email))) {
     await markReplied(env, r.id);

@@ -16,6 +16,9 @@ export const SECRET_KEYS = [
   "google_client_id",
   "google_client_secret",
   "google_refresh_token",
+  "microsoft_client_id",
+  "microsoft_client_secret",
+  "microsoft_refresh_token",
   "cloudflare_api_token",
   "cloudflare_account_id",
 ] as const;

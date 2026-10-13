@@ -176,6 +176,8 @@ function respond(system, prompt) {
         })),
     };
   }
+  if (/page publique d'un professionnel/.test(system))
+    return { nom: "Jean Dupont", intitule: "Chef de projet AMOA senior", localisation: "Paris", competences: ["AMOA", "SEPA", "SAP FI", "recette", "Jira"], annees_experience: 9, secteurs: ["banque"], langues: ["anglais"], statut: null, resume: "9 ans en AMOA bancaire, paiements SEPA." };
   if (/notes l'adéquation/.test(system)) {
     const n = (prompt.match(/^\[\d+\]/gm) ?? []).length;
     return { scores: Array.from({ length: n }, (_, i) => ({ index: i, competences_souhaitees: 80, seniorite: 85, secteur: 90, langues: 70, soft_skills: 60 })) };
@@ -210,6 +212,8 @@ const calls = [];
 let geminiMode = "ok";
 let lastGemini = null;
 let lastGroq = null;
+let lastTavily = null;
+let lastOutlook = null;
 let groqMode = "ok";
 const tgSent = [];
 let existingWebhook = "";
@@ -233,8 +237,19 @@ const fakeFetch = async (url, init = {}) => {
     if (groqMode === "json400" && b.response_format) return new Response('{"error":{"message":"Failed to validate JSON","code":"json_validate_failed"}}', { status: 400 });
     return ok({ choices: [{ message: { content: JSON.stringify(respond(b.messages[0].content, b.messages[1].content)) } }], usage: { completion_tokens: 50 } });
   }
+  if (u.host === "api.tavily.com" && u.pathname === "/extract") {
+    calls.push("tavily_extract");
+    const b = JSON.parse(init.body);
+    return ok({
+      results: b.urls.map((url) => ({
+        url,
+        raw_content: `Jean Dupont · Chef de projet AMOA senior · Paris. Expérience : 9 ans en AMOA bancaire (paiements SEPA, SAP FI), pilotage de recettes de 400 cas, Jira, anglais courant. ${"Détails. ".repeat(40)}`,
+      })),
+    });
+  }
   if (u.host === "api.tavily.com") {
     calls.push("tavily");
+    lastTavily = JSON.parse(init.body);
     return ok({
       results: [
         { title: "Jean Dupont - Chef de projet AMOA | LinkedIn", url: "https://fr.linkedin.com/in/jean-dupont-amoa?trk=x", content: "AMOA, recette, SAP, banque" },
@@ -252,6 +267,18 @@ const fakeFetch = async (url, init = {}) => {
     return ok({ ok: true, result: { message_id: tgSent.length } });
   }
   if (u.host === "oauth2.googleapis.com") return ok({ access_token: "at" });
+  if (u.host === "login.microsoftonline.com") {
+    calls.push("ms_token");
+    return ok({ access_token: "msat", refresh_token: "rt2" });
+  }
+  if (u.host === "graph.microsoft.com") {
+    if (u.pathname.endsWith("/me/sendMail")) {
+      calls.push("outlook_send");
+      lastOutlook = JSON.parse(init.body);
+      return new Response(null, { status: 202 });
+    }
+    if (u.pathname.includes("/mailFolders/inbox/messages")) return ok({ value: [{ from: { emailAddress: { address: "B.Martin@exemple.fr" } } }, { from: { emailAddress: { address: "autre@x.fr" } } }] });
+  }
   if (u.host === "gmail.googleapis.com") {
     if (u.pathname.endsWith("/messages/send")) {
       calls.push("gmail_send");
@@ -517,6 +544,38 @@ await test("sourcing : relancé deux fois, aucun doublon (CV-thèque dédoublonn
   assert(c === 2 && a === 2, `${c} candidats, ${a} candidatures`);
 });
 
+await test("sourcing booléen : groupes OR, compétences en AND, exclusions, adapté à chaque moteur", async () => {
+  const qs = X.sourcing.buildBooleanQueries(fiche(), 1, 10);
+  const strict = qs.find((q) => q.label === "strict");
+  assert(strict.domain === "linkedin.com/in", strict.domain);
+  assert(strict.boolean.startsWith('("Chef de projet AMOA" OR "Business Analyst")'), strict.boolean);
+  assert(/"AMOA" "recette" "SAP" "Paris"/.test(strict.boolean) && /-recrute/.test(strict.boolean), strict.boolean);
+  assert(qs.some((q) => q.domain === "malt.fr/profile"), "Malt");
+  const wide = X.sourcing.buildBooleanQueries(fiche(), 2, 10);
+  assert(wide.some((q) => /"MOA"/.test(q.boolean)) && wide.length >= 3, JSON.stringify(wide));
+  assert(X.search.engineQuery("brave", strict).startsWith("site:linkedin.com/in "), "Brave : site:");
+  assert(!X.search.engineQuery("tavily", strict).includes("site:"), "Tavily : pas de site: dans le texte");
+  await X.search.webSearch(env, strict, missionId);
+  assert(JSON.stringify(lastTavily.include_domains) === '["linkedin.com"]', JSON.stringify(lastTavily));
+});
+
+await test("pages LinkedIn publiques lues sans connexion (robot Tavily) : profil enrichi et re-scoré", async () => {
+  calls.length = 0;
+  const n = await X.mission.enrichTopProfiles(env, missionId);
+  assert(n >= 1, `${n} enrichi(s)`);
+  assert(calls.includes("tavily_extract") && !calls.some((c) => /linkedin/.test(c)), calls.join());
+  const p = JSON.parse(await env.DB.prepare("SELECT profile FROM candidates WHERE linkedin_url = ?").bind("https://www.linkedin.com/in/jean-dupont-amoa").first("profile"));
+  assert(p.annees_experience === 9 && p.competences.includes("SEPA") && p.competences.includes("Jira"), JSON.stringify(p));
+});
+
+await test("élargissement : le tour 2 ne part que si le vivier est trop maigre", async () => {
+  calls.length = 0;
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify({ mission: { pool_target: 1 } })).run();
+  assert((await X.mission.sourceFromWeb(env, missionId, 2)) === 0 && !calls.includes("tavily"), "tour 2 lancé à tort");
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'config'").run();
+  assert((await X.mission.sourceFromWeb(env, missionId, 2)) > 0 && calls.includes("tavily"), "tour 2 non lancé");
+});
+
 await test("CV-thèque : recherche plein texte (accents et casse ignorés)", async () => {
   const hits = await X.sourcing.searchCvtheque(env, { ...fiche(), intitule: "chef de projet amoa", competences_obligatoires: ["sap"], mots_cles: [] });
   assert(hits.length === 2, `${hits.length}`);
@@ -670,6 +729,42 @@ await test("Telegram : un bot déjà utilisé par un autre projet (boutique) n'e
   existingWebhook = "";
   await X.telegram.setupBot(env, "123:abc", hook, "s");
   assert(tgSent.filter((m) => m.method === "setWebhook").length === 1, "le webhook déjà en place ne doit pas être redemandé ; le bot dédié doit être relié");
+});
+
+await test("Outlook : choisi comme boîte d'envoi → envoi par Microsoft Graph, réponses lues, jeton durable renouvelé", async () => {
+  const e = await makeEnv();
+  for (const [k, v] of Object.entries({ microsoft_client_id: "mid", microsoft_client_secret: "ms", microsoft_refresh_token: "rt1" })) await X.db.setSetting(e, k, v, true);
+  await X.db.setSetting(e, "outlook_address", "zacharie@outlook.fr");
+  await X.db.setSetting(e, "mail_provider", "outlook");
+  assert((await X.mail.activeMailbox(e)) === "outlook", "boîte");
+  calls.length = 0;
+  await X.mail.sendMail(e, "Zacharie R.", "b.martin@exemple.fr", "Mission AMOA", "Bonjour");
+  assert(calls.includes("outlook_send") && !calls.includes("gmail_send"), calls.join());
+  assert(lastOutlook.message.toRecipients[0].emailAddress.address === "b.martin@exemple.fr" && lastOutlook.saveToSentItems, JSON.stringify(lastOutlook));
+  assert((await X.db.getSetting(e, "microsoft_refresh_token")) === "rt2", "jeton durable non renouvelé");
+  const r = await X.mail.mailRepliesFrom(e, ["b.martin@exemple.fr", "c@x.fr"]);
+  assert(r.has("b.martin@exemple.fr") && r.size === 1, [...r].join());
+  await X.db.setSetting(e, "mail_provider", "gmail");
+  calls.length = 0;
+  await X.mail.sendMail(e, "Zacharie R.", "b.martin@exemple.fr", "x", "y");
+  assert(calls.includes("gmail_send"), "bascule vers Gmail");
+});
+
+await test("extension Edge : archive .zip préconfigurée (adresse + jeton), à jour avec le dossier extension/", async () => {
+  const { render } = await import("./build-extension.mjs");
+  assert(readFileSync("worker/src/generated/extension.ts", "utf8") === render(), "lancez « npm run build:extension »");
+  const ctx = { waitUntil() {} };
+  const denied = await X.worker.fetch(new Request("https://x/api/admin/extension.zip"), env, ctx);
+  assert(denied.status === 401, `sans session : ${denied.status}`);
+  const cookie = "ax_session=" + (await X.security.derivedSecret(env.ADMIN_TOKEN, "session"));
+  const res = await X.worker.fetch(new Request("https://x/api/admin/extension.zip", { headers: { cookie } }), env, ctx);
+  assert(res.status === 200 && res.headers.get("content-type") === "application/zip", `${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const text = new TextDecoder().decode(bytes);
+  for (const f of ["agent-x-linkedin/manifest.json", "agent-x-linkedin/background.js", "agent-x-linkedin/content.js", "agent-x-linkedin/popup.html", "agent-x-linkedin/config.js"]) assert(text.includes(f), f);
+  const tok = await X.security.derivedSecret(env.ADMIN_TOKEN, "extension");
+  assert(text.includes(tok) && text.includes("https://agent-x.test.workers.dev"), "réglages non préremplis");
+  if (process.env.ZIP_OUT) (await import("node:fs")).writeFileSync(process.env.ZIP_OUT, bytes);
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

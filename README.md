@@ -10,8 +10,8 @@ Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (G
 | --- | --- | --- |
 | F1 Fiche modèle | Transforme la fiche brute (texte, PDF ou capture) en fiche structurée : critères éliminatoires et pondérés, mots-clés, périmètre élargi, niveau exigeant, questionnaire | n°1 : fiche, questionnaire, nom d'expéditeur |
 | F2 Évolutions | Applique une évolution du besoin, re-score le vivier, apprend les exigences récurrentes du client | — |
-| F3 Sourcing | CV-thèque d'abord, puis profils publics (LinkedIn en recherche web, Malt, GitHub) ; scoring par la matrice | — |
-| F4 Contact | Email automatique depuis Gmail ; LinkedIn pré-rempli par l'extension (un clic « Envoyer ») ; 3 relances aux créneaux ouvrés | — |
+| F3 Sourcing | CV-thèque d'abord, puis recherche booléenne autonome (LinkedIn public, Malt, GitHub) avec élargissement automatique ; lecture des pages publiques des meilleurs profils sans connexion ; scoring par la matrice | — |
+| F4 Contact | Email automatique depuis Gmail ou Outlook ; LinkedIn pré-rempli par l'extension Edge (un clic « Envoyer ») ; 3 relances aux créneaux ouvrés | — |
 | F5 Qualification | Questionnaire court noté sur une grille commune ; rejet proposé, jamais automatique | n°2 : rejet définitif |
 | F6 CV | Dossier de compétences anonymisé, .docx compatible ATS, adéquation au descriptif mesurée, aucune compétence inventée | n°3 et 4 : shortlist et envoi |
 | F7 Suivi | Décision du client (placé, non retenu) en un clic | — |
@@ -51,7 +51,9 @@ Agent X a **son propre bot**, distinct de tout autre projet : créez-le avec @Bo
 
 Dans la page de configuration, section Telegram : **Relier mon Telegram**, puis ouvrez le lien affiché et touchez **Démarrer**. Le bot ne répond qu'à vous.
 
-### 4. Connecter Gmail (emails automatiques)
+### 4. Connecter votre boîte email (Gmail ou Outlook)
+
+**Gmail**
 
 1. [console.cloud.google.com](https://console.cloud.google.com) → nouveau projet « Agent X ».
 2. **API et services → Bibliothèque** : activez **Gmail API**.
@@ -59,13 +61,22 @@ Dans la page de configuration, section Telegram : **Relier mon Telegram**, puis 
 4. **Identifiants → Créer → ID client OAuth → Application Web**, avec l'URI de redirection affichée dans la page de configuration (`…/oauth/google/callback`).
 5. Collez l'identifiant et le secret dans la page de configuration, puis **Connecter Gmail**.
 
-Outlook : prévu en version 0.2.
+**Outlook (outlook.com, hotmail ou Microsoft 365)**
 
-### 5. Installer l'extension LinkedIn (Chrome)
+1. [entra.microsoft.com](https://entra.microsoft.com) → **Applications → Inscriptions d'applications → Nouvelle inscription** : nom « Agent X », types de comptes « comptes dans un annuaire organisationnel et comptes Microsoft personnels », URI de redirection **Web** = celle affichée dans la page de configuration (`…/oauth/microsoft/callback`).
+2. **Certificats et secrets → Nouveau secret client** : copiez la **valeur**.
+3. **Autorisations d'API → Microsoft Graph → Autorisations déléguées** : `Mail.Send`, `Mail.Read`, `offline_access`, `User.Read`.
+4. Collez l'ID d'application et le secret dans la page de configuration, puis **Connecter Outlook**.
 
-1. Téléchargez le dossier `extension/` du dépôt.
-2. `chrome://extensions` → **Mode développeur** → **Charger l'extension non empaquetée** → dossier `extension`.
-3. Dans la page de configuration, section Extension : copiez l'adresse et le jeton dans les réglages de l'extension.
+Si les deux boîtes sont connectées, choisissez celle des envois dans la section 4.
+
+### 5. Installer l'extension LinkedIn (Microsoft Edge)
+
+Page de configuration, section 6 : **Télécharger l'extension pour Edge**. Le fichier est déjà configuré (adresse et jeton inclus).
+
+1. Clic droit sur `agent-x-linkedin.zip` → **Extraire tout**.
+2. `edge://extensions` → **Mode développeur**.
+3. **Charger l'élément décompressé** → dossier `agent-x-linkedin`.
 
 Chaque jour : icône Agent X → **Ouvrir la file du jour**. L'extension ouvre chaque profil et remplit le message ; vous relisez et cliquez sur **Envoyer**. Elle ne clique jamais à votre place : c'est ce qui protège votre compte LinkedIn.
 
@@ -94,7 +105,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 35 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 43 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 
@@ -108,8 +119,8 @@ npx wrangler dev
 
 ## Limites connues (v0.1)
 
-- Outlook non pris en charge (Gmail uniquement).
 - Recherche dans la CV-thèque en plein texte ; la recherche sémantique (Vectorize) viendra ensuite.
+- Pages LinkedIn publiques : lues par les robots de Tavily ou d'Exa, sans connexion ; certaines pages restent inaccessibles sans compte, l'agent garde alors l'extrait de recherche.
 - L'extension dépend de la mise en page de LinkedIn, qui change souvent : en cas d'échec, elle bascule sur « Copier le message ».
 - Sur un profil non connecté, LinkedIn n'autorise qu'une invitation avec une note courte : l'extension propose alors une version de 190 caractères.
 - Pour un usage commercial en Europe, Google impose une clé Gemini payante, fournie par chaque client. Un système de tri de candidats relève aussi du « haut risque » de l'AI Act : conformité à compléter avant la commercialisation.

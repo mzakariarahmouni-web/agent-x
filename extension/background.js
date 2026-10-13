@@ -1,6 +1,18 @@
 // Agent X — service worker : dialogue avec le Worker (file d'envoi, envois confirmés, réponses détectées).
 
-const get = (k) => chrome.storage.local.get(k);
+// Réglages préremplis par la page de configuration (fichier config.js inclus dans le téléchargement).
+try {
+  importScripts("config.js");
+} catch (_) {
+  /* extension chargée sans config.js : réglages saisis dans la fenêtre de l'extension */
+}
+const DEFAULTS = self.AGENT_X_DEFAULTS || {};
+
+const get = async (k) => {
+  const v = await chrome.storage.local.get(k);
+  for (const key of [].concat(k)) if (v[key] == null && DEFAULTS[key] != null) v[key] = DEFAULTS[key];
+  return v;
+};
 const set = (o) => chrome.storage.local.set(o);
 
 async function call(path, body) {

@@ -2,6 +2,10 @@ import { ai } from "./ai/router";
 import { getConfig, getSetting, journal, parseJson, SECRET_KEYS, type SecretKey, secrets, setSetting, deleteSetting } from "./db";
 import type { Env } from "./env";
 import { authUrl, exchangeCode } from "./gmail";
+import { activeMailbox } from "./mail";
+import { outlookAuthUrl, outlookExchangeCode } from "./outlook";
+import { zipStore } from "./docx";
+import { EXTENSION_FILES } from "./generated/extension";
 import page from "./pages/config.html";
 import { webSearch } from "./search";
 import { derivedSecret, safeEqual } from "./security";
@@ -64,6 +68,8 @@ async function status(env: Env): Promise<Response> {
     configured,
     telegram: await telegramStatus(env),
     gmail: await getSetting(env, "gmail_address"),
+    outlook: await getSetting(env, "outlook_address"),
+    mailbox: await activeMailbox(env),
     public_url: await getSetting(env, "public_url"),
     workers_ai: !!env.AI,
     usage: await usageToday(env),
@@ -89,7 +95,8 @@ async function saveSecrets(env: Env, req: Request): Promise<Response> {
 }
 
 async function savePrefs(env: Env, req: Request): Promise<Response> {
-  const b = (await req.json()) as { sender_default?: string; premium_cv?: boolean; cv_brand?: unknown; config?: unknown };
+  const b = (await req.json()) as { sender_default?: string; premium_cv?: boolean; cv_brand?: unknown; config?: unknown; mail_provider?: string };
+  if (b.mail_provider === "gmail" || b.mail_provider === "outlook") await setSetting(env, "mail_provider", b.mail_provider);
   if (typeof b.sender_default === "string") await setSetting(env, "sender_default", b.sender_default.trim().slice(0, 80));
   if (typeof b.premium_cv === "boolean") await setSetting(env, "premium_cv", b.premium_cv ? "1" : "0");
   if (b.cv_brand && typeof b.cv_brand === "object") await setSetting(env, "cv_brand", JSON.stringify(b.cv_brand));
@@ -137,6 +144,39 @@ async function googleStart(env: Env, req: Request): Promise<Response> {
   return Response.redirect(authUrl(k.google_client_id, `${origin}/oauth/google/callback`, state), 302);
 }
 
+/** Extension Edge/Chrome prête à installer : archive .zip avec l'adresse et le jeton déjà renseignés. */
+export async function extensionZip(env: Env, origin: string): Promise<Uint8Array> {
+  const url = (await getSetting(env, "public_url")) || origin;
+  const token = await derivedSecret(env.ADMIN_TOKEN!, "extension");
+  const enc = new TextEncoder();
+  const files = Object.entries(EXTENSION_FILES).map(([name, text]) => ({ name: `agent-x-linkedin/${name}`, data: enc.encode(text) }));
+  files.push({ name: "agent-x-linkedin/config.js", data: enc.encode(`// Réglages d'Agent X (préremplis). Ne partagez pas ce fichier : il contient votre jeton.\nself.AGENT_X_DEFAULTS = ${JSON.stringify({ url, token })};\n`) });
+  return zipStore(files);
+}
+
+async function microsoftStart(env: Env, req: Request): Promise<Response> {
+  const k = await secrets(env);
+  if (!k.microsoft_client_id || !k.microsoft_client_secret) return new Response("Renseignez d'abord l'identifiant et le secret de l'application Microsoft.", { status: 400 });
+  const origin = (await getSetting(env, "public_url")) || new URL(req.url).origin;
+  return Response.redirect(outlookAuthUrl(k.microsoft_client_id, `${origin}/oauth/microsoft/callback`, await derivedSecret(env.ADMIN_TOKEN!, "microsoft-oauth")), 302);
+}
+
+async function microsoftCallback(env: Env, req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  if (!safeEqual(url.searchParams.get("state") ?? "", await derivedSecret(env.ADMIN_TOKEN!, "microsoft-oauth"))) return new Response("Requête invalide.", { status: 400 });
+  const code = url.searchParams.get("code");
+  if (!code) return Response.redirect(`${url.origin}/config?outlook=refus`, 302);
+  try {
+    const origin = (await getSetting(env, "public_url")) || url.origin;
+    const address = await outlookExchangeCode(env, code, `${origin}/oauth/microsoft/callback`);
+    if (!(await getSetting(env, "mail_provider"))) await setSetting(env, "mail_provider", "outlook");
+    await journal(env, "admin", "outlook_connecte", address);
+    return Response.redirect(`${url.origin}/config?outlook=ok`, 302);
+  } catch (e) {
+    return new Response(`Connexion Outlook impossible : ${(e as Error).message}`, { status: 400 });
+  }
+}
+
 async function googleCallback(env: Env, req: Request): Promise<Response> {
   const url = new URL(req.url);
   const state = url.searchParams.get("state") ?? "";
@@ -173,7 +213,13 @@ async function routeAdmin(env: Env, req: Request, path: string): Promise<Respons
   if (path === "/api/admin/telegram" && req.method === "POST") return linkTelegram(env, req);
   if (path.startsWith("/api/admin/test/")) return testProvider(env, path.split("/").pop()!);
   if (path === "/api/admin/extension") return json({ ok: true, token: await derivedSecret(env.ADMIN_TOKEN, "extension"), url: (await getSetting(env, "public_url")) || new URL(req.url).origin });
+  if (path === "/api/admin/extension.zip")
+    return new Response(await extensionZip(env, new URL(req.url).origin), {
+      headers: { "content-type": "application/zip", "content-disposition": 'attachment; filename="agent-x-linkedin.zip"', "cache-control": "no-store" },
+    });
   if (path === "/oauth/google/start") return googleStart(env, req);
   if (path === "/oauth/google/callback") return googleCallback(env, req);
+  if (path === "/oauth/microsoft/start") return microsoftStart(env, req);
+  if (path === "/oauth/microsoft/callback") return microsoftCallback(env, req);
   return json({ ok: false, error: "introuvable" }, 404);
 }

@@ -4,7 +4,7 @@ import type { Env } from "./env";
 import type { Fiche } from "./fiche";
 import { evaluate, type MatchResult, type Profile, type SubScores } from "./matching";
 import { isOptedOut } from "./rgpd";
-import { webSearch, type SearchHit } from "./search";
+import { readPublicPages, type SearchHit, type SearchQuery, webSearch } from "./search";
 import { newId } from "./security";
 
 /** F3 — Sourcing : CV-thèque d'abord, puis profils publics (recherche web), extraction structurée et scoring. */
@@ -20,23 +20,53 @@ export function canonLinkedin(u: string): string {
   return m ? `https://www.linkedin.com/in/${decodeURIComponent(m[1]).toLowerCase()}` : u;
 }
 
-const quote = (s: string) => `"${s.replace(/"/g, "")}"`;
+const quote = (s: string) => `"${s.replace(/"/g, "").trim()}"`;
+const orGroup = (terms: string[]) => {
+  const t = [...new Set(terms.map((x) => x.trim()).filter(Boolean))];
+  return t.length > 1 ? `(${t.map(quote).join(" OR ")})` : t.length ? quote(t[0]) : "";
+};
 
-/** Requêtes de recherche : LinkedIn public (X-ray), puis plateformes freelance et GitHub, du plus précis au plus large. */
-export function buildQueries(f: Fiche, max: number): string[] {
-  const title = f.intitule;
-  const near = f.niveau_elargi.intitules_proches.slice(0, 3);
+/** Exclusions : pages d'offres d'emploi et de cabinets, pas des personnes. */
+export const EXCLUSIONS = '-"offre d\'emploi" -recrute -recrutement -"we are hiring" -jobs';
+
+export interface BooleanPlan {
+  round: 1 | 2;
+  queries: SearchQuery[];
+}
+
+/**
+ * Chaînes booléennes de la mission, de la plus précise à la plus large.
+ * Tour 1 : strict, moyen, freelance, Malt, GitHub. Tour 2 (si le vivier est maigre) : périmètre élargi.
+ */
+export function buildBooleanQueries(f: Fiche, round: 1 | 2, max: number): SearchQuery[] {
+  const titles = [f.intitule, ...f.niveau_elargi.intitules_proches.slice(0, 3)];
   const must = f.competences_obligatoires.slice(0, 3);
   const loc = f.localisation ? f.localisation.split(/[,(]/)[0].trim() : "";
-  const q: string[] = [];
-  q.push(`site:linkedin.com/in ${quote(title)} ${must.slice(0, 2).map(quote).join(" ")} ${loc}`.trim());
-  q.push(`site:linkedin.com/in ${quote(title)} ${must.slice(0, 1).map(quote).join(" ")} freelance ${loc}`.trim());
-  for (const n of near) q.push(`site:linkedin.com/in ${quote(n)} ${must.slice(0, 2).map(quote).join(" ")} ${loc}`.trim());
-  q.push(`site:malt.fr ${title} ${must.slice(0, 2).join(" ")}`);
-  if (must.length >= 2) q.push(`site:linkedin.com/in ${must.map(quote).join(" ")} ${loc}`.trim());
-  if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud/i.test(title)) q.push(`site:github.com ${must.slice(0, 2).join(" ")} ${loc} France`);
-  for (const s of f.synonymes.slice(0, 3)) q.push(`site:linkedin.com/in ${quote(s)} ${loc}`.trim());
-  return [...new Set(q.map((x) => x.replace(/\s+/g, " ")))].slice(0, max);
+  const locPart = loc ? quote(loc) : "";
+  const join = (...parts: string[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const q: SearchQuery[] = [];
+  if (round === 1) {
+    q.push({ label: "strict", domain: "linkedin.com/in", boolean: join(orGroup(titles), ...must.map(quote), locPart, EXCLUSIONS) });
+    if (must.length > 2) q.push({ label: "moyen", domain: "linkedin.com/in", boolean: join(orGroup(titles), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
+    q.push({ label: "freelance", domain: "linkedin.com/in", boolean: join(orGroup(titles), must[0] ? quote(must[0]) : "", '(freelance OR "consultant indépendant" OR indépendant)', locPart, EXCLUSIONS) });
+    q.push({ label: "compétences", domain: "linkedin.com/in", boolean: join(...must.map(quote), orGroup([...f.competences_souhaitees.slice(0, 3)]), locPart, EXCLUSIONS) });
+    q.push({ label: "malt", domain: "malt.fr/profile", boolean: join(orGroup(titles.slice(0, 2)), ...must.slice(0, 2).map(quote)) });
+    if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud|architecte/i.test(f.intitule)) q.push({ label: "github", domain: "github.com", boolean: join(...must.slice(0, 2).map(quote), loc || "France") });
+  } else {
+    const wideTitles = [...titles, ...f.synonymes.slice(0, 4)];
+    const adj = f.niveau_elargi.competences_adjacentes.slice(0, 4);
+    q.push({ label: "élargi", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), must[0] ? orGroup([must[0], ...adj.slice(0, 2)]) : "", locPart, EXCLUSIONS) });
+    q.push({ label: "élargi sans lieu", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), ...must.slice(0, 2).map(quote), '(France OR "Île-de-France" OR remote OR télétravail)', EXCLUSIONS) });
+    if (adj.length) q.push({ label: "adjacent", domain: "linkedin.com/in", boolean: join(orGroup(titles), orGroup(adj), locPart, EXCLUSIONS) });
+    q.push({ label: "malt élargi", domain: "malt.fr/profile", boolean: join(orGroup(wideTitles), must[0] ? quote(must[0]) : "") });
+  }
+  const seen = new Set<string>();
+  return q.filter((x) => x.boolean && !seen.has(x.domain + x.boolean) && seen.add(x.domain + x.boolean)).slice(0, max);
+}
+
+/** Ancienne interface (requêtes texte « site:… »), conservée pour les appels existants. */
+export function buildQueries(f: Fiche, max: number): string[] {
+  return buildBooleanQueries(f, 1, max).map((x) => (x.domain ? `site:${x.domain} ${x.boolean}` : x.boolean));
 }
 
 /** Candidats de la CV-thèque proches de la fiche (recherche plein texte), hors liste d'opposition. */
@@ -198,11 +228,11 @@ export async function scoreAndStore(
   return out;
 }
 
-/** Recherche web complète pour une mission : requêtes, extraction, dédoublonnage, CV-thèque. */
-export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQueries: number): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
+/** Un tour de recherche booléenne : requêtes, extraction, dédoublonnage, CV-thèque. */
+export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 1 | 2, maxQueries: number): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
   const seen = new Set<string>();
   const found: { candidateId: string; profile: SourcedProfile }[] = [];
-  for (const q of buildQueries(f, maxQueries)) {
+  for (const q of buildBooleanQueries(f, round, maxQueries)) {
     const { engine, hits } = await webSearch(env, q, missionId);
     const fresh = hits.filter((h) => !seen.has(h.url.split("?")[0]));
     fresh.forEach((h) => seen.add(h.url.split("?")[0]));
@@ -212,7 +242,57 @@ export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQue
       const id = await upsertCandidate(env, p);
       if (!found.some((x) => x.candidateId === id)) found.push({ candidateId: id, profile: p });
     }
-    await journal(env, "sourcing", "recherche", { requete: q, moteur: engine, resultats: hits.length, profils: profiles.length }, { mission: missionId });
+    await journal(env, "sourcing", "recherche", { tour: round, type: q.label, requete: q.boolean, site: q.domain, moteur: engine, resultats: hits.length, profils: profiles.length }, { mission: missionId });
   }
   return found;
+}
+
+/** Compatibilité : premier tour seulement. */
+export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQueries: number): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
+  return sourceRound(env, missionId, f, 1, maxQueries);
+}
+
+const PAGE_SYSTEM = `Tu lis la page publique d'un professionnel (profil LinkedIn public, Malt ou GitHub) et tu en extrais un profil fidèle.
+N'invente rien ; un champ absent vaut null ou [].
+« resume » : 3 à 6 lignes factuelles sur les expériences (postes, secteurs, durées, réalisations chiffrées s'il y en a).
+Réponds uniquement en JSON : { "nom": "", "intitule": "", "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }`;
+
+/**
+ * Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa),
+ * puis profil enrichi : compétences complètes, expérience, secteurs. Renvoie les profils mis à jour.
+ */
+export async function enrichFromPublicPages(env: Env, missionId: string, items: { candidateId: string; url: string }[]): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
+  if (!items.length) return [];
+  const { engine, pages } = await readPublicPages(env, items.map((i) => i.url), missionId);
+  const out: { candidateId: string; profile: SourcedProfile }[] = [];
+  for (const page of pages) {
+    const item = items.find((i) => canonLinkedin(i.url) === canonLinkedin(page.url) || i.url === page.url);
+    if (!item || page.text.length < 200) continue;
+    const { data } = await ai<Profile>(env, {
+      family: "volume",
+      label: "lecture de profil public",
+      missionId,
+      system: PAGE_SYSTEM,
+      prompt: page.text.slice(0, 6000),
+      json: true,
+      maxTokens: 1500,
+      validate: (d) => (d && typeof d === "object" && Array.isArray(d.competences) ? null : "compétences absentes"),
+    });
+    const row = await env.DB.prepare("SELECT profile FROM candidates WHERE id = ?").bind(item.candidateId).first<{ profile: string }>();
+    const prev = parseJson<SourcedProfile>(row?.profile, { source: "web" });
+    const merged: SourcedProfile = {
+      ...prev,
+      ...Object.fromEntries(Object.entries(data).filter(([, v]) => v != null && v !== "" && !(Array.isArray(v) && !v.length))),
+      competences: [...new Set([...(prev.competences ?? []), ...(data.competences ?? [])])],
+      nom: prev.nom || data.nom,
+      linkedin_url: prev.linkedin_url,
+      email: prev.email,
+      source: prev.source,
+      source_url: prev.source_url,
+    };
+    await upsertCandidate(env, merged);
+    out.push({ candidateId: item.candidateId, profile: merged });
+  }
+  await journal(env, "sourcing", "lecture_pages_publiques", { moteur: engine, demandees: items.length, lues: pages.length, enrichies: out.length }, { mission: missionId });
+  return out;
 }

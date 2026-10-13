@@ -1,14 +1,35 @@
 {
   "manifest_version": 3,
   "name": "Agent X — LinkedIn",
-  "version": "0.1.0",
-  "description": "File d'envoi d'Agent X : ouvre chaque profil et pré-remplit le message. Vous cliquez sur « Envoyer ».",
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["https://*.workers.dev/*", "https://www.linkedin.com/*"],
-  "optional_host_permissions": ["https://*/*"],
-  "background": { "service_worker": "background.js" },
-  "content_scripts": [
-    { "matches": ["https://www.linkedin.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  "version": "0.2.0",
+  "description": "File d'envoi d'Agent X pour Microsoft Edge (et Chrome) : ouvre chaque profil et pré-remplit le message. Vous cliquez sur « Envoyer ».",
+  "permissions": [
+    "storage",
+    "tabs"
   ],
-  "action": { "default_popup": "popup.html", "default_title": "Agent X" }
+  "host_permissions": [
+    "https://*.workers.dev/*",
+    "https://www.linkedin.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Agent X"
+  }
 }
