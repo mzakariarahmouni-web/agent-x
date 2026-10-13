@@ -41,7 +41,7 @@ Ouvrez `https://agent-x.<votre-sous-domaine>.workers.dev/config`, entrez votre `
 | Gemini | Oui | [aistudio.google.com](https://aistudio.google.com/app/apikey) → Get API key |
 | Groq (relais) | Oui | [console.groq.com/keys](https://console.groq.com/keys) |
 | Tavily (recherche) | Oui, 1 000 recherches par mois | [app.tavily.com](https://app.tavily.com) |
-| Brave, Exa (relais de recherche) | Crédit mensuel gratuit | [Brave](https://api-dashboard.search.brave.com), [Exa](https://dashboard.exa.ai/api-keys) |
+| Brave, Exa (2e et 3e moteurs, interrogés en parallèle de Tavily) | Brave : 5 $ de crédit par mois, carte demandée ; Exa : crédit mensuel | [Brave](https://api-dashboard.search.brave.com), [Exa](https://dashboard.exa.ai/api-keys) |
 | Hunter (emails professionnels, option) | Oui, 25 recherches par mois | [hunter.io/api-keys](https://hunter.io/api-keys) |
 | Bot Telegram | Oui | [@BotFather](https://t.me/BotFather) → `/newbot` |
 | Claude (option CV premium) | Non, environ 0,40 $ par mission | [platform.claude.com](https://platform.claude.com/settings/keys) |
@@ -109,7 +109,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 57 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 58 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 

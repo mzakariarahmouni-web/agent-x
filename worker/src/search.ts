@@ -124,7 +124,45 @@ async function failure(env: Env, engine: Engine, e: unknown, missionId?: string)
   await journal(env, "recherche", "relais", { moteur: engine, erreur: (e as Error).message.slice(0, 200) }, { mission: missionId });
 }
 
+/**
+ * Recherche sur tous les moteurs disponibles en parallèle (Tavily, Brave, Exa), résultats fusionnés et dédoublonnés :
+ * chaque moteur a son propre index, on trouve donc plus de profils. Un moteur en panne ne bloque pas les autres ;
+ * si tous échouent, SearchUnavailable (l'étape attend et reprend).
+ */
 export async function webSearch(env: Env, query: string | SearchQuery, missionId?: string): Promise<{ engine: string; hits: SearchHit[] }> {
+  const cfg = await getConfig(env);
+  if ((cfg.search as { mode?: string }).mode === "relais") return webSearchChain(env, query, missionId);
+  const q = toQuery(query);
+  const { list, soonest: s0 } = await usableEngines(env, "search");
+  const n = cfg.search.results_per_query;
+  const outcomes = await Promise.all(
+    list.map(async ({ engine, key }) => {
+      try {
+        const hits = engine === "tavily" ? await tavily(env, key, q, n) : engine === "brave" ? await brave(env, key, q, n) : await exa(env, key, q, n);
+        await recordSuccess(env, `search:${engine}`);
+        return { engine, hits };
+      } catch (e) {
+        await failure(env, engine, e, missionId);
+        return null;
+      }
+    }),
+  );
+  const ok = outcomes.filter((o): o is { engine: Engine; hits: SearchHit[] } => !!o);
+  if (!ok.length) throw new SearchUnavailable(new Date(list.length ? Date.now() + 30 * 60_000 : Number.isFinite(s0) ? s0 : Date.now() + 6 * 3_600_000));
+  const seen = new Set<string>();
+  const hits: SearchHit[] = [];
+  for (const o of ok)
+    for (const h of o.hits) {
+      const k = h.url.split(/[?#]/)[0].replace(/\/$/, "").replace(/^https?:\/\/[a-z]{2}\.linkedin\.com/i, "https://www.linkedin.com").toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      hits.push(h);
+    }
+  return { engine: ok.map((o) => o.engine).join("+"), hits };
+}
+
+/** Ancien mode : un seul moteur à la fois, les suivants en relais (réglage search.mode = "relais"). */
+export async function webSearchChain(env: Env, query: string | SearchQuery, missionId?: string): Promise<{ engine: string; hits: SearchHit[] }> {
   const cfg = await getConfig(env);
   const q = toQuery(query);
   const { list, soonest: s0 } = await usableEngines(env, "search");

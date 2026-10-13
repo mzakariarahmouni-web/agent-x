@@ -225,6 +225,9 @@ let lastTavily = null;
 let lastOutlook = null;
 let groqMode = "ok";
 let lastHunter = null;
+let lastBrave = null;
+let lastExa = null;
+let braveMode = "ok";
 const tgSent = [];
 let existingWebhook = "";
 const fakeFetch = async (url, init = {}) => {
@@ -275,6 +278,20 @@ const fakeFetch = async (url, init = {}) => {
     if (method === "getMe") return ok({ ok: true, result: { username: "agentx_test_bot" } });
     if (method === "getWebhookInfo") return ok({ ok: true, result: { url: existingWebhook } });
     return ok({ ok: true, result: { message_id: tgSent.length } });
+  }
+  if (u.host === "api.search.brave.com") {
+    calls.push("brave");
+    lastBrave = u.searchParams.get("q");
+    if (braveMode === "down") return new Response("boom", { status: 500 });
+    return ok({ web: { results: [
+      { title: "Jean Dupont - Chef de projet AMOA | LinkedIn", url: "https://www.linkedin.com/in/jean-dupont-amoa/", description: "doublon <b>AMOA</b>" },
+      { title: "Karim Benali - Consultant EDI | LinkedIn", url: "https://fr.linkedin.com/in/karim-benali-edi", description: "EDIFACT, AS2, Paris" },
+    ] } });
+  }
+  if (u.host === "api.exa.ai") {
+    calls.push("exa");
+    lastExa = JSON.parse(init.body);
+    return ok({ results: [{ title: "Sophie Martin - Ingénieure EDI | LinkedIn", url: "https://fr.linkedin.com/in/sophie-martin-edi", text: "EDI, EDIFACT, XSLT, Lyon" }] });
   }
   if (u.host === "api.hunter.io") {
     calls.push("hunter");
@@ -1008,6 +1025,26 @@ await test("vivier : règles rejouées sans IA (profil écarté à tort rétabli
   assert(n === 1 && score < 55 && tgSent.some((t) => /Ke Zhao/.test(t.body.text ?? "")), `${n} carte(s), score ${score}`);
   await e.DB.prepare("UPDATE missions SET status = 'terminee' WHERE id = 'm_pool'").run();
   assert((await X.mission.sourceFromWeb(e, "m_pool", 3)) === 0, "mission clôturée : plus de recherche");
+});
+
+await test("recherche : Tavily, Brave et Exa interrogés en parallèle, résultats fusionnés sans doublon ; un moteur en panne ne bloque pas", async () => {
+  const e = await makeEnv();
+  await X.db.setSetting(e, "brave_api_key", "bk", true);
+  await X.db.setSetting(e, "exa_api_key", "ek", true);
+  const q = { boolean: '("Consultant EDI" OR "Ingénieur EDI") "EDIFACT" -recrute', domain: "fr.linkedin.com/in" };
+  calls.length = 0;
+  const r = await X.search.webSearch(e, q, "m_x");
+  assert(["tavily", "brave", "exa"].every((c) => calls.includes(c)), calls.join());
+  assert(r.engine === "tavily+brave+exa", r.engine);
+  const urls = r.hits.map((h) => h.url);
+  assert(urls.filter((u) => /jean-dupont-amoa/.test(u)).length === 1, "doublon Jean Dupont (fr. et www.)");
+  assert(urls.some((u) => /karim-benali/.test(u)) && urls.some((u) => /sophie-martin/.test(u)), urls.join());
+  assert(lastBrave.startsWith("site:fr.linkedin.com/in ") && lastBrave.includes("-recrute"), lastBrave);
+  assert(JSON.stringify(lastExa.includeDomains) === '["fr.linkedin.com"]' && !/"|-recrute/.test(lastExa.query), JSON.stringify(lastExa));
+  braveMode = "down";
+  const r2 = await X.search.webSearch(e, q, "m_x");
+  braveMode = "ok";
+  assert(r2.engine === "tavily+exa" && r2.hits.length >= 3, r2.engine);
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

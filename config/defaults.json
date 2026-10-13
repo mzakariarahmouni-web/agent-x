@@ -28,7 +28,8 @@
   },
   "search": {
     "chain": ["tavily", "brave", "exa"],
-    "monthly_limits": { "tavily": 1000, "brave": 950, "exa": 900, "hunter": 25 },
+    "mode": "parallele",
+    "monthly_limits": { "tavily": 1000, "brave": 900, "exa": 900, "hunter": 25 },
     "queries_per_mission": 12,
     "results_per_query": 10
   },
