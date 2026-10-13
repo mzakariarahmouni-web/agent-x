@@ -208,6 +208,8 @@ function respond(system, prompt) {
 
 const calls = [];
 let geminiMode = "ok";
+let lastGemini = null;
+let lastGroq = null;
 let groqMode = "ok";
 const tgSent = [];
 let existingWebhook = "";
@@ -219,6 +221,7 @@ const fakeFetch = async (url, init = {}) => {
     if (geminiMode === "429") return new Response('{"error":"quota"}', { status: 429 });
     if (geminiMode === "garbage") return ok({ candidates: [{ content: { parts: [{ text: "pas du json" }] } }] });
     const b = JSON.parse(init.body);
+    lastGemini = b;
     const prompt = b.contents[0].parts.at(-1).text;
     return ok({ candidates: [{ content: { parts: [{ text: JSON.stringify(respond(b.systemInstruction.parts[0].text, prompt)) }] } }], usageMetadata: { candidatesTokenCount: 100 } });
   }
@@ -226,6 +229,8 @@ const fakeFetch = async (url, init = {}) => {
     calls.push("groq");
     if (groqMode === "500") return new Response("boom", { status: 500 });
     const b = JSON.parse(init.body);
+    lastGroq = b;
+    if (groqMode === "json400" && b.response_format) return new Response('{"error":{"message":"Failed to validate JSON","code":"json_validate_failed"}}', { status: 400 });
     return ok({ choices: [{ message: { content: JSON.stringify(respond(b.messages[0].content, b.messages[1].content)) } }], usage: { completion_tokens: 50 } });
   }
   if (u.host === "api.tavily.com") {
@@ -413,6 +418,21 @@ await test("IA : un PDF n'est jamais envoyé à un modèle qui ne sait pas le li
   }
   geminiMode = "ok";
   assert(err instanceof X.router.AllProvidersDown && !calls.includes("groq") && !calls.includes("workersai"), calls.join());
+});
+await test("IA : réflexion basse et marge de sortie minimale (pas de réponse vide sur un petit test)", async () => {
+  const env = await makeEnv();
+  await X.router.ai(env, { family: "jugement", system: "Réponds uniquement en JSON.", prompt: "x", json: true, maxTokens: 50 });
+  assert(lastGemini.generationConfig.maxOutputTokens >= 2048, `${lastGemini.generationConfig.maxOutputTokens}`);
+  assert(lastGemini.generationConfig.thinkingConfig?.thinkingLevel === "low", JSON.stringify(lastGemini.generationConfig));
+});
+await test("IA : Groq refuse le mode JSON strict → nouvel essai en texte libre, sans changer de fournisseur", async () => {
+  const env = await makeEnv();
+  geminiMode = "429";
+  groqMode = "json400";
+  const r = await X.router.ai(env, { family: "jugement", system: "Réponds uniquement en JSON.", prompt: "x", json: true });
+  geminiMode = "ok";
+  groqMode = "ok";
+  assert(r.provider.startsWith("groq:") && !lastGroq.response_format && lastGroq.reasoning_effort === "low", JSON.stringify(lastGroq));
 });
 await test("IA : extraction du JSON entouré de texte ou de ```json", () => {
   assert(X.router.extractJson('Voici :\n```json\n{"a":1}\n```').a === 1, "bloc");

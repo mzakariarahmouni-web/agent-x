@@ -50,9 +50,18 @@ export function providerAvailable(env: Env, keys: ProviderKeys, provider: Provid
   }
 }
 
-async function gemini(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number): Promise<ChatResult> {
-  type R = { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; usageMetadata?: { candidatesTokenCount?: number } };
-  const data = await fetchJson<R>(
+/**
+ * Les modèles récents « réfléchissent » avant de répondre et ces jetons comptent dans la limite de sortie :
+ * une limite trop basse donne une réponse vide. On garde donc une marge minimale et un niveau de réflexion bas.
+ */
+export const MIN_OUTPUT_TOKENS = 2048;
+const outTokens = (req: ChatRequest) => Math.max(req.maxTokens ?? 4096, MIN_OUTPUT_TOKENS);
+
+async function gemini(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number, thinking = true): Promise<ChatResult> {
+  type R = { candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[]; usageMetadata?: { candidatesTokenCount?: number } };
+  let data: R;
+  try {
+    data = await fetchJson<R>(
     env,
     "gemini",
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -64,21 +73,29 @@ async function gemini(env: Env, key: string, model: string, req: ChatRequest, ti
         contents: [{ role: "user", parts: [...(req.file ? [{ inlineData: { mimeType: req.file.mime, data: req.file.base64 } }] : []), { text: req.prompt }] }],
         generationConfig: {
           temperature: req.temperature ?? 0.3,
-          maxOutputTokens: req.maxTokens ?? 4096,
+          maxOutputTokens: outTokens(req),
+          ...(thinking ? { thinkingConfig: { thinkingLevel: "low" } } : {}),
           ...(req.json ? { responseMimeType: "application/json" } : {}),
         },
       }),
     },
     timeoutMs,
   );
-  const text = (data.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join("");
+  } catch (e) {
+    // Modèle sans réglage de réflexion : on réessaie sans ce paramètre.
+    if (thinking && e instanceof HttpError && e.status === 400 && /thinking/i.test(e.message)) return gemini(env, key, model, req, timeoutMs, false);
+    throw e;
+  }
+  const text = (data.candidates?.[0]?.content?.parts ?? []).filter((p) => !p.thought).map((p) => p.text ?? "").join("");
   if (!text) throw new HttpError(502, "gemini", `réponse vide (${data.candidates?.[0]?.finishReason ?? "?"})`);
   return { text, units: data.usageMetadata?.candidatesTokenCount ?? 0 };
 }
 
-async function groq(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number): Promise<ChatResult> {
+async function groq(env: Env, key: string, model: string, req: ChatRequest, timeoutMs: number, jsonMode = true): Promise<ChatResult> {
   type R = { choices?: { message?: { content?: string } }[]; usage?: { completion_tokens?: number } };
-  const data = await fetchJson<R>(
+  let data: R;
+  try {
+    data = await fetchJson<R>(
     env,
     "groq",
     "https://api.groq.com/openai/v1/chat/completions",
@@ -88,16 +105,22 @@ async function groq(env: Env, key: string, model: string, req: ChatRequest, time
       body: JSON.stringify({
         model,
         temperature: req.temperature ?? 0.3,
-        max_tokens: req.maxTokens ?? 4096,
+        max_tokens: outTokens(req),
         messages: [
           { role: "system", content: req.system },
           { role: "user", content: req.prompt },
         ],
-        ...(req.json ? { response_format: { type: "json_object" } } : {}),
+        ...(/gpt-oss/.test(model) ? { reasoning_effort: "low" } : {}),
+        ...(req.json && jsonMode ? { response_format: { type: "json_object" } } : {}),
       }),
     },
     timeoutMs,
   );
+  } catch (e) {
+    // Mode JSON strict refusé par Groq : on réessaie en texte libre, le JSON est extrait ensuite.
+    if (jsonMode && req.json && e instanceof HttpError && e.status === 400 && /json/i.test(e.message)) return groq(env, key, model, req, timeoutMs, false);
+    throw e;
+  }
   const text = data.choices?.[0]?.message?.content ?? "";
   if (!text) throw new HttpError(502, "groq", "réponse vide");
   return { text, units: data.usage?.completion_tokens ?? 0 };
@@ -114,7 +137,7 @@ async function claude(env: Env, key: string, model: string, req: ChatRequest, ti
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model,
-        max_tokens: req.maxTokens ?? 4096,
+        max_tokens: outTokens(req),
         temperature: req.temperature ?? 0.3,
         system: req.system,
         messages: [
@@ -148,8 +171,10 @@ async function workersai(env: Env, model: string, req: ChatRequest): Promise<Cha
         { role: "system", content: req.system },
         { role: "user", content: req.prompt },
       ],
-      max_tokens: req.maxTokens ?? 4096,
+      max_tokens: outTokens(req),
       temperature: req.temperature ?? 0.3,
+      // Nemotron : réflexion courte et réponse jamais vide.
+      ...(/nemotron/.test(model) ? { chat_template_kwargs: { enable_thinking: true, low_effort: true, force_nonempty_content: true } } : {}),
     });
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
