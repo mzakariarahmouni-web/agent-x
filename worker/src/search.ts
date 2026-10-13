@@ -39,8 +39,21 @@ export function toQuery(q: string | SearchQuery): SearchQuery {
 /** Texte exact envoyé à chaque moteur (exporté pour les tests). */
 export function engineQuery(engine: Engine, q: SearchQuery): string {
   if (engine === "brave") return q.domain ? `site:${q.domain} ${q.boolean}` : q.boolean;
-  // Tavily et Exa filtrent le site par paramètre ; la syntaxe « site: » dans le texte les perturbe.
-  return q.boolean;
+  // Tavily et Exa ne sont pas des moteurs booléens : la même recherche en mots-clés simples
+  // (exclusions retirées, groupes OR réduits aux deux premières variantes), le site étant filtré par paramètre.
+  return naturalQuery(q.boolean);
+}
+
+export function naturalQuery(boolean: string): string {
+  const withoutExcl = boolean.replace(/(^|\s)-("[^"]*"|\S+)/g, " ");
+  const groups = withoutExcl.replace(/\(([^()]*)\)/g, (_, inner: string) =>
+    inner
+      .split(/\s+OR\s+/)
+      .slice(0, 2)
+      .map((x) => x.replace(/"/g, "").trim())
+      .join(" or "),
+  );
+  return groups.replace(/"/g, "").replace(/\s+/g, " ").trim();
 }
 
 const baseDomain = (d?: string) => (d ? d.replace(/\/.*$/, "") : undefined);

@@ -1,9 +1,9 @@
 import { ai } from "./ai/router";
-import { getConfig, journal, nowIso, parseJson } from "./db";
+import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
 import { type Fiche, readFiche } from "./fiche";
 import { findMissingEmails } from "./hunter";
-import { hasSkill } from "./matching";
+import { hasSkill, isLanguage, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
 import type { SourcedProfile } from "./sourcing";
@@ -41,9 +41,10 @@ interface CardRow {
 export function cardText(f: Fiche, r: CardRow, rank: number, total: number): string {
   const p = parseJson<SourcedProfile>(r.profile, { source: r.source });
   const detail = parseJson<{ a_verifier?: string[]; couverture_obligatoires?: number } & Record<string, number>>(r.score_detail, {});
-  const covered = f.competences_obligatoires.filter((s) => hasSkill([...(p.competences ?? []), p.intitule ?? "", p.resume ?? ""], s));
+  const must = f.competences_obligatoires.filter((s) => !isLanguage(s));
+  const covered = must.filter((s) => hasSkill(profileTerms(p), s));
   const strengths: string[] = [];
-  if (covered.length) strengths.push(`${covered.join(", ")} (${covered.length}/${f.competences_obligatoires.length} obligatoires)`);
+  if (covered.length) strengths.push(`${covered.join(", ")} (${covered.length}/${must.length} obligatoires)`);
   if (typeof p.annees_experience === "number") strengths.push(`${p.annees_experience} ans d'expérience`);
   else if (p.secteurs?.length) strengths.push(`secteur ${p.secteurs.slice(0, 2).join(", ")}`);
   const where = [p.intitule, p.entreprise ? `chez ${p.entreprise}` : "", p.localisation].filter(Boolean).join(" · ");
@@ -230,6 +231,12 @@ Réponds uniquement en JSON : { "objet": "", "modele": "" }`,
   return { objet: (data.objet ?? f.intitule).trim(), modele: data.modele.trim() };
 }
 
+/** Le message ne peut pas partir sans signature : validé seulement si un expéditeur est connu. */
+export async function senderKnown(env: Env, missionId: string): Promise<boolean> {
+  const m = await env.DB.prepare("SELECT sender_name FROM missions WHERE id = ?").bind(missionId).first<{ sender_name: string | null }>();
+  return !!(m?.sender_name || (await getSetting(env, "sender_default")));
+}
+
 /** Phrase personnelle pour un profil (modèle économique), insérée à la place de {accroche}. */
 export async function accroche(env: Env, f: Fiche, p: SourcedProfile, missionId?: string): Promise<string> {
   try {
@@ -252,9 +259,10 @@ Réponds uniquement en JSON : { "accroche": "" }`,
 
 /** Validation du message : modèle, 2 exemples personnalisés, choix du canal. */
 export async function sendMessageValidation(env: Env, missionId: string, model: MessageModel, reminder = 0): Promise<void> {
-  const m = await env.DB.prepare("SELECT fiche, title FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string }>();
+  const m = await env.DB.prepare("SELECT fiche, title, sender_name FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string; sender_name: string | null }>();
   if (!m) return;
   const f = readFiche(m.fiche);
+  const sender = m.sender_name || (await getSetting(env, "sender_default"));
   const { results } = await env.DB.prepare(
     "SELECT c.full_name, c.profile, c.email FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.mission_id = ? AND a.state = 'go' ORDER BY a.score DESC LIMIT 2",
   )
@@ -278,6 +286,7 @@ export async function sendMessageValidation(env: Env, missionId: string, model: 
       `${counts?.go ?? 0} profil(s) Go · email connu : ${counts?.mail ?? 0} · LinkedIn : ${counts?.li ?? 0}`,
       "",
       `Objet : ${model.objet}`,
+      `Signature : ${sender || "⚠️ à préciser (touche « Modifier » et écris « expéditeur : Prénom Nom, Cabinet »)"}`,
       model.modele,
       examples.length ? `\nExemples personnalisés :\n${examples.join("\n\n")}` : "",
       "\nCanal : « Auto » = email si l'adresse est connue, sinon LinkedIn (file de l'extension). Les relances reprennent ce ton automatiquement.",

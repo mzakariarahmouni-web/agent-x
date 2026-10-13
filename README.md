@@ -109,7 +109,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 51 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 54 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 

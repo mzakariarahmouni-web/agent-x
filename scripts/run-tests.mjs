@@ -930,6 +930,41 @@ await test("sourcing continu : rotation de nouvelles requêtes, jamais deux fois
   assert(typeof pool.active === "number" && pool.active >= 1, JSON.stringify(pool));
 });
 
+// ───────────── Cas réel : fiche EDI (intitulé double, précisions entre parenthèses, langue en compétence) ─────────────
+const edi = () => ({
+  ...fiche(),
+  intitule: "Consultant EDI / Chef de projet EDI",
+  localisation: "",
+  competences_obligatoires: ["Linux", "Shell", "EDIFACT (messages EDI)", "Anglais (écrit et parlé)", "Gestion de projet EDI"],
+  competences_souhaitees: ["XML", "XSLT"],
+  synonymes: ["Consultant EDI", "Chef de projet EDI", "Support technique EDI"],
+  niveau_elargi: { intitules_proches: ["Consultant EDI", "Chef de projet EDI", "Support technique EDI"], competences_adjacentes: ["XML", "XSLT"], seniorite_min_annees: 3 },
+});
+
+await test("fiche EDI : recherches propres (intitulé découpé, pas de parenthèses ni de langue, compétences courtes)", () => {
+  const qs = X.sourcing.buildBooleanQueries(edi(), 1, 10);
+  const strict = qs.find((q) => q.label === "strict").boolean;
+  assert(!/\(messages|Anglais|"Consultant EDI \/ Chef/.test(strict), strict);
+  assert(/"Consultant EDI" OR "Chef de projet EDI"/.test(strict) && /"Linux" "Shell" "EDIFACT"/.test(strict), strict);
+  const nat = X.search.engineQuery("tavily", { boolean: strict, domain: "linkedin.com/in" });
+  assert(!/"|-recrute|\(/.test(nat) && /Consultant EDI or Chef de projet EDI/.test(nat), nat);
+  assert(X.search.engineQuery("brave", { boolean: strict, domain: "linkedin.com/in" }).includes("-recrute"), "Brave garde le booléen");
+});
+
+await test("pages de profil seulement : pages de tags Malt, offres et recherches ignorées", () => {
+  const ok = X.sourcing.isProfileUrl;
+  assert(ok("https://fr.linkedin.com/in/jean-dupont", "linkedin.com/in") && !ok("https://www.linkedin.com/jobs/view/123", "linkedin.com/in"), "LinkedIn");
+  assert(ok("https://www.malt.fr/profile/ibrahimagniengue1") && !ok("https://www.malt.fr/s/tags/gestion-de-projet-59ca?p=114"), "Malt");
+  assert(ok("https://github.com/octocat") && !ok("https://github.com/topics/edi") && !ok("https://github.com/a/b"), "GitHub");
+});
+
+await test("matching EDI : expression longue reconnue mot à mot, langue vérifiée au questionnaire (pas pénalisante)", () => {
+  const p = { intitule: "Chef de projet EDI", competences: ["EDIFACT", "Linux", "Shell scripting", "gestion de projet", "XSLT"], annees_experience: 6 };
+  const r = X.matching.evaluate(edi(), p, { competences_souhaitees: 70, seniorite: 80, secteur: 60, langues: 50, soft_skills: 60 }, { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 });
+  assert(r.mandatoryCoverage === 100 && !r.eliminated && r.score >= 55, JSON.stringify(r));
+  assert(!X.matching.hasSkill(["Chef de projet SI", "ERP"], "Gestion de projet EDI"), "faux positif");
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

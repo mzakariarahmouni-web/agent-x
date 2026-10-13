@@ -49,18 +49,28 @@ export function norm(s: string): string {
     .trim();
 }
 
-/** Le profil mentionne-t-il la compétence (ou un de ses synonymes) ? */
+const STOP = new Set(["de", "du", "des", "la", "le", "les", "et", "en", "a", "au", "aux", "d", "l", "un", "une", "pour", "sur", "avec", "of", "and", "the"]);
+const word = (hay: string, w: string) => (w.length <= 3 ? new RegExp(`(^|[^a-z0-9])${w.replace(/[.+#]/g, (c) => `\\${c}`)}([^a-z0-9]|$)`).test(hay) : hay.includes(w));
+
+/** Le profil mentionne-t-il la compétence (ou un de ses synonymes) ? Expression longue : tous ses mots significatifs présents. */
 export function hasSkill(profileTerms: string[], skill: string, synonyms: string[] = []): boolean {
   const hay = ` ${profileTerms.map(norm).join(" | ")} `;
   return [skill, ...synonyms].some((t) => {
-    const n = norm(t);
+    const n = norm(t.replace(/\([^)]*\)/g, " "));
     if (!n) return false;
-    if (n.length <= 3) return new RegExp(`(^|[^a-z0-9])${n.replace(/[.+#]/g, (c) => `\\${c}`)}([^a-z0-9]|$)`).test(hay);
-    return hay.includes(n);
+    if (word(hay, n)) return true;
+    const words = n.split(" ").filter((w) => w && !STOP.has(w));
+    return words.length >= 2 && words.every((w) => word(hay, w));
   });
 }
 
-function profileTerms(p: Profile): string[] {
+const LANGS = /^(anglais|english|francais|french|allemand|german|espagnol|spanish|italien|italian|portugais|neerlandais|dutch|arabe|chinois|mandarin|japonais|russe|polonais)\b/;
+/** Une « compétence » qui est en fait une langue (vérifiée par le questionnaire, pas par le profil). */
+export function isLanguage(skill: string): boolean {
+  return LANGS.test(norm(skill));
+}
+
+export function profileTerms(p: Profile): string[] {
   return [...(p.competences ?? []), p.intitule ?? "", p.resume ?? ""].filter(Boolean);
 }
 
@@ -70,7 +80,8 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   const terms = profileTerms(p);
 
   // Compétences obligatoires : on mesure la couverture ; une absence n'élimine que si le profil est riche (≥ 5 compétences listées).
-  const mandatory = f.competences_obligatoires;
+  // Les langues sont vérifiées au questionnaire : elles ne pèsent pas sur la couverture des compétences.
+  const mandatory = f.competences_obligatoires.filter((s) => !isLanguage(s));
   const found = mandatory.filter((s) => hasSkill(terms, s, f.synonymes.filter((x) => norm(x).includes(norm(s)))));
   const coverage = mandatory.length ? found.length / mandatory.length : 1;
   const richProfile = (p.competences?.length ?? 0) >= 5;

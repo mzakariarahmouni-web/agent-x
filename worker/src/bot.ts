@@ -5,7 +5,7 @@ import { getMission, storeBriefFile } from "./mission";
 import { eraseCandidate, findCandidate } from "./rgpd";
 import { derivedSecret, newId, safeEqual } from "./security";
 import { usageToday } from "./usage";
-import { closeReview, goBest, reviewDecision, reviewPending } from "./review";
+import { closeReview, goBest, reviewDecision, reviewPending, senderKnown } from "./review";
 import { answerCallback, type Bot, type Button, downloadFile, editButtons, send } from "./telegram";
 import { answerValidation, applyRejection, getValidation } from "./validations";
 import type { MissionEvent } from "./workflow";
@@ -184,11 +184,15 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
         type === "v1"
           ? "✏️ Écris la modification (une ou plusieurs lignes) :"
           : type === "vmsg"
-            ? "✏️ Que faut-il changer dans le message ? (ex. « plus court, mentionne le télétravail 3 jours »)"
+            ? "✏️ Que faut-il changer dans le message ? (ex. « plus court, mentionne le télétravail 3 jours », ou « expéditeur : Prénom Nom, Cabinet »)"
             : "✏️ Quels numéros retirer ? (ex. « retire 2 »)",
       ));
     }
     if (type === "vmsg") {
+      if (!(await senderKnown(env, v.mission_id ?? ""))) {
+        await reply("Signature manquante");
+        return void (await send(env, b, "✍️ Il manque la signature des messages : touche « Modifier » et écris « expéditeur : Prénom Nom, Cabinet », puis valide à nouveau."));
+      }
       const mode = action === "em" ? "email" : action === "li" ? "linkedin" : "auto";
       await answerValidation(env, v.id, "validee", mode);
       await sendMissionEvent(env, v.mission_id!, "vmsg", { action: "ok", mode });

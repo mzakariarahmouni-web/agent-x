@@ -8,7 +8,7 @@
       },
       "volume": {
         "label": "Volume (scoring, messages, résumés)",
-        "chain": ["workersai:@cf/google/gemma-4-26b-a4b-it", "groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite"]
+        "chain": ["groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite", "workersai:@cf/google/gemma-4-26b-a4b-it"]
       },
       "cv": {
         "label": "Rédaction du CV client",

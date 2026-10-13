@@ -1,8 +1,8 @@
 import { ai } from "./ai/router";
 import { journal, parseJson } from "./db";
 import type { Env } from "./env";
-import type { Fiche } from "./fiche";
-import { evaluate, type MatchResult, type Profile, type SubScores } from "./matching";
+import { cleanTerm, type Fiche } from "./fiche";
+import { evaluate, isLanguage, type MatchResult, type Profile, type SubScores } from "./matching";
 import { recentNogo } from "./review";
 import { isOptedOut } from "./rgpd";
 import { readPublicPages, type SearchHit, type SearchQuery, webSearch } from "./search";
@@ -30,6 +30,38 @@ const orGroup = (terms: string[]) => {
 /** Exclusions : pages d'offres d'emploi et de cabinets, pas des personnes. */
 export const EXCLUSIONS = '-"offre d\'emploi" -recrute -recrutement -"we are hiring" -jobs';
 
+const uniq = (xs: string[]) => {
+  const seen = new Set<string>();
+  return xs.map((x) => x.trim()).filter((x) => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+};
+
+/** Intitulés recherchés : l'intitulé découpé (« A / B »), puis les intitulés proches, nettoyés et dédoublonnés. */
+export function titlesOf(f: Fiche): string[] {
+  return uniq([...f.intitule.split(/\s*[/|]\s*/), ...f.niveau_elargi.intitules_proches].map(cleanTerm)).slice(0, 4);
+}
+
+/** Compétences obligatoires utilisables dans une recherche : sans langue, sans précision, les plus courtes d'abord. */
+export function mustSkills(f: Fiche): string[] {
+  return uniq(f.competences_obligatoires.map(cleanTerm))
+    .filter((s) => !isLanguage(s))
+    .sort((a, b) => a.split(" ").length - b.split(" ").length)
+    .slice(0, 3);
+}
+
+/** Seules les pages de personnes sont gardées (pas les pages de recherche, de tags ou d'offres). */
+export function isProfileUrl(url: string, domain?: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (/linkedin\.com$/.test(u.hostname) || domain?.startsWith("linkedin.com")) return /\/in\/[^/]+/.test(u.pathname);
+  if (/malt\.(fr|com)$/.test(u.hostname)) return /^\/profile\/[^/]+/.test(u.pathname);
+  if (/github\.com$/.test(u.hostname)) return /^\/[^/]+\/?$/.test(u.pathname) && !/^\/(topics|search|orgs|features|about|pricing|login)\b/.test(u.pathname);
+  return true;
+}
+
 export interface BooleanPlan {
   round: SourcingRound;
   queries: SearchQuery[];
@@ -42,8 +74,8 @@ export interface BooleanPlan {
 export type SourcingRound = 1 | 2 | 3;
 
 export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number): SearchQuery[] {
-  const titles = [f.intitule, ...f.niveau_elargi.intitules_proches.slice(0, 3)];
-  const must = f.competences_obligatoires.slice(0, 3);
+  const titles = titlesOf(f);
+  const must = mustSkills(f);
   const loc = f.localisation ? f.localisation.split(/[,(]/)[0].trim() : "";
   const locPart = loc ? quote(loc) : "";
   const join = (...parts: string[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
@@ -57,12 +89,12 @@ export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number)
     if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud|architecte/i.test(f.intitule)) q.push({ label: "github", domain: "github.com", boolean: join(...must.slice(0, 2).map(quote), loc || "France") });
   } else if (round === 3) {
     // Sourcing continu : rotation de variantes (un intitulé à la fois, synonymes, compétence par compétence, autres sites).
-    const wide = [...new Set([...titles, ...f.synonymes.slice(0, 6)])];
+    const wide = uniq([...titles, ...f.synonymes.slice(0, 6).map(cleanTerm)]);
     for (const t of wide) q.push({ label: `variante ${t}`, domain: "linkedin.com/in", boolean: join(quote(t), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
     for (const s of [...must, ...f.competences_souhaitees.slice(0, 3)]) q.push({ label: `compétence ${s}`, domain: "linkedin.com/in", boolean: join(orGroup(titles), quote(s), locPart || '(France OR remote)', EXCLUSIONS) });
     for (const t of wide.slice(0, 3)) q.push({ label: `malt ${t}`, domain: "malt.fr/profile", boolean: join(quote(t), must[0] ? quote(must[0]) : "", loc) });
   } else {
-    const wideTitles = [...titles, ...f.synonymes.slice(0, 4)];
+    const wideTitles = uniq([...titles, ...f.synonymes.slice(0, 4).map(cleanTerm)]);
     const adj = f.niveau_elargi.competences_adjacentes.slice(0, 4);
     q.push({ label: "élargi", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), must[0] ? orGroup([must[0], ...adj.slice(0, 2)]) : "", locPart, EXCLUSIONS) });
     q.push({ label: "élargi sans lieu", domain: "linkedin.com/in", boolean: join(orGroup(wideTitles), ...must.slice(0, 2).map(quote), '(France OR "Île-de-France" OR remote OR télétravail)', EXCLUSIONS) });
@@ -80,7 +112,7 @@ export function buildQueries(f: Fiche, max: number): string[] {
 
 /** Candidats de la CV-thèque proches de la fiche (recherche plein texte), hors liste d'opposition. */
 export async function searchCvtheque(env: Env, f: Fiche, limit = 30): Promise<{ id: string; profile: SourcedProfile }[]> {
-  const terms = [...f.competences_obligatoires, ...f.mots_cles.slice(0, 10), f.intitule]
+  const terms = [...mustSkills(f), ...f.mots_cles.slice(0, 10), ...titlesOf(f)]
     .map((t) => t.replace(/["*():^-]/g, " ").trim())
     .filter((t) => t.length > 1);
   if (!terms.length) return [];
@@ -249,7 +281,7 @@ export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 
   const queries = buildBooleanQueries(f, round, 50).filter((q) => !used.has(`${q.domain}|${q.boolean}`)).slice(0, maxQueries);
   for (const q of queries) {
     const { engine, hits } = await webSearch(env, q, missionId);
-    const fresh = hits.filter((h) => !seen.has(h.url.split("?")[0]));
+    const fresh = hits.filter((h) => isProfileUrl(h.url, q.domain) && !seen.has(h.url.split("?")[0]));
     fresh.forEach((h) => seen.add(h.url.split("?")[0]));
     const profiles = await extractProfiles(env, fresh, missionId);
     for (const p of profiles) {
@@ -257,7 +289,7 @@ export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 
       const id = await upsertCandidate(env, p);
       if (!found.some((x) => x.candidateId === id)) found.push({ candidateId: id, profile: p });
     }
-    await journal(env, "sourcing", "recherche", { tour: round, type: q.label, requete: q.boolean, site: q.domain, moteur: engine, resultats: hits.length, profils: profiles.length }, { mission: missionId });
+    await journal(env, "sourcing", "recherche", { tour: round, type: q.label, requete: q.boolean, site: q.domain, moteur: engine, resultats: hits.length, pages_profil: fresh.length, profils: profiles.length }, { mission: missionId });
   }
   return found;
 }

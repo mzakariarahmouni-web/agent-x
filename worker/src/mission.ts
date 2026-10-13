@@ -219,7 +219,9 @@ export async function reportSourcing(
       `CV-thèque : ${stats.cvtheque} profil(s) · Web public (booléen) : ${stats.web} profil(s)${stats.widened ? ` dont ${stats.widened} au tour élargi` : ""}`,
       `Pages publiques lues sans connexion : ${stats.enriched} profil(s) enrichi(s)`,
       `Écartés (critères éliminatoires) : ${stats.eliminated}`,
-      `À revoir : ${stats.toReview} profil(s) au-dessus du seuil → cartes Go / No go ci-dessous`,
+      stats.toReview
+        ? `À revoir : ${stats.toReview} profil(s) au-dessus du seuil → cartes Go / No go ci-dessous`
+        : "Aucun profil assez proche de la fiche pour l'instant : je relance tout de suite avec d'autres variantes (intitulés, compétences, sites), puis toutes les 6 h.",
       `Échéance shortlist : ${m.deadline_at ? frDate(new Date(m.deadline_at)) : "—"}`,
       booleanLine ? `\nRecherche booléenne principale :\n${booleanLine}` : "",
     ]

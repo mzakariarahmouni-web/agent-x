@@ -100,6 +100,14 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         return true;
       });
       const d = await this.waitDecision(step, `vmsg:${tag}#${round}`, "vmsg", (n) => sendMessageValidation(env, id, current, n), reminderHours);
+      const senderChange = d.action === "mod" ? /^\s*exp[ée]diteur\s*:\s*(.+)$/i.exec(d.text ?? "") : null;
+      if (senderChange) {
+        await step.do(`message:${tag}:expediteur#${round}`, async () => {
+          await env.DB.prepare("UPDATE missions SET sender_name = ? WHERE id = ?").bind(senderChange[1].trim().slice(0, 80), id).run();
+          return true;
+        });
+        continue;
+      }
       if (d.action === "mod") {
         model = await this.resilient(step, `message:${tag}:modif#${round}`, async () => {
           const m = await getMission(env, id);
@@ -168,7 +176,19 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     });
 
     // Revue : une carte par profil, Go / No go (motif). Rien n'est envoyé sans Go.
-    const cards = await step.do("revue:cartes", () => sendReviewCards(env, id));
+    let cards = await step.do("revue:cartes", () => sendReviewCards(env, id));
+    if (cards === 0) {
+      // Rien d'assez pertinent : tour de variantes immédiat (sans attendre le sourcing continu).
+      await this.resilient(step, "sourcing:variantes", () => sourceFromWeb(env, id, 3));
+      await this.resilient(step, "sourcing:variantes-lecture", () => enrichTopProfiles(env, id, 5));
+      cards = await step.do("revue:cartes-variantes", () => sendReviewCards(env, id));
+      if (cards === 0) {
+        await step.do("revue:aucune", async () => {
+          await notify(env, "🔎 Toujours aucun profil assez proche de la fiche. Je continue de chercher toutes les 6 h. Si le besoin le permet, élargis la fiche avec /missions → « Faire évoluer » (ex. « accepte aussi les profils support EDI sans gestion de projet »).");
+          return true;
+        });
+      }
+    }
     let messageDone = false;
     if (cards > 0) {
       await this.waitDecision(step, "revue", "revue", (n) => remindReview(env, id, n), cfg.reminderHours);

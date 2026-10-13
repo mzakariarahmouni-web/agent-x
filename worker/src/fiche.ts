@@ -50,7 +50,8 @@ const SYSTEM = `Tu es un chargé de recrutement expert des consultants IT et mé
 Tu transformes une fiche de poste brute en fiche modèle structurée, exacte et exploitable par un agent automatique.
 Règles :
 - N'invente rien qui ne soit pas dans la fiche ou dans les exigences connues du client ; quand tu supposes, écris-le dans « hypotheses ».
-- « competences_obligatoires » : seulement les exigences explicites et non négociables (3 à 6).
+- « competences_obligatoires » : seulement les exigences explicites et non négociables (3 à 6), en termes courts tels qu'ils figurent sur un CV (ex. « EDIFACT », pas « EDIFACT (messages EDI) ») ; les langues vont dans « langues », pas ici.
+- « intitule » : un seul intitulé court (ex. « Consultant EDI ») ; les variantes vont dans « synonymes ».
 - « eliminatoires » : uniquement des critères binaires vérifiables (disponibilité, statut, localisation, langue, TJM, compétence clé).
 - « niveau_elargi » : synonymes, intitulés voisins, compétences adjacentes pour ne rater aucun profil.
 - « niveau_exigeant » : les critères qu'un client exigeant durcira probablement (anticipation).
@@ -70,6 +71,11 @@ const SHAPE = `{
  "niveau_exigeant": { "criteres_durcis": [""] },
  "questions_clarification": [""], "hypotheses": [""]
 }`;
+
+/** Terme court et exploitable : sans précision entre parenthèses ni ponctuation finale. */
+export function cleanTerm(s: string): string {
+  return s.replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").replace(/[\s.;:,]+$/, "").trim();
+}
 
 export function validateFiche(f: Partial<Fiche>): string | null {
   if (!f || typeof f !== "object") return "pas un objet";
@@ -99,8 +105,8 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     statuts_acceptes: arr(raw.statuts_acceptes).map((s) => s.toLowerCase()),
     budget: { tjm_min: num(b.tjm_min), tjm_max: num(b.tjm_max), salaire_min: num(b.salaire_min), salaire_max: num(b.salaire_max) },
     seniorite_min_annees: num(raw.seniorite_min_annees),
-    competences_obligatoires: arr(raw.competences_obligatoires),
-    competences_souhaitees: arr(raw.competences_souhaitees),
+    competences_obligatoires: arr(raw.competences_obligatoires).map(cleanTerm).filter(Boolean),
+    competences_souhaitees: arr(raw.competences_souhaitees).map(cleanTerm).filter(Boolean),
     langues: arr(raw.langues),
     soft_skills: arr(raw.soft_skills),
     eliminatoires: Array.isArray(raw.eliminatoires)
