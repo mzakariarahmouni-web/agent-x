@@ -248,8 +248,9 @@ export async function scoreAndStore(
   const out: ScoredCandidate[] = [];
   // Apprentissage : les No go du recruteur (avec motif) orientent la notation des profils suivants.
   const learned = items.length ? await recentNogo(env, missionId) : "";
-  for (let i = 0; i < items.length; i += 10) {
-    const batch = items.slice(i, i + 10);
+  // Lots de 5 : requêtes courtes, compatibles avec les limites « par minute » des offres gratuites.
+  for (let i = 0; i < items.length; i += 5) {
+    const batch = items.slice(i, i + 5);
     const subs = await subScores(env, f, batch.map((b) => b.profile), missionId, learned);
     const stmts: D1PreparedStatement[] = [];
     batch.forEach((b, j) => {

@@ -23,6 +23,7 @@ import {
 import { applyMessage, type ChannelMode, closeReview, draftModel, type MessageModel, remindReview, sendMessageValidation, sendReviewCards } from "./review";
 import { readFiche } from "./fiche";
 import { getSetting } from "./db";
+import { reevaluatePool } from "./pool";
 import { SearchUnavailable } from "./search";
 import { notify } from "./telegram";
 
@@ -170,6 +171,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
     const enriched = await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id));
     await step.do("sourcing:rapport", async () => {
+      await reevaluatePool(env, id);
       const pool = await poolStats(env, id);
       await reportSourcing(env, id, { cvtheque: fromCv, web: fromWeb + widened, widened, enriched, toReview: pool.toReview, eliminated: pool.eliminated });
       return true;

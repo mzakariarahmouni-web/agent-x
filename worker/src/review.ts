@@ -3,6 +3,7 @@ import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
 import { type Fiche, readFiche } from "./fiche";
 import { findMissingEmails } from "./hunter";
+import { reevaluatePool } from "./pool";
 import { hasSkill, isLanguage, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
@@ -73,25 +74,33 @@ export function cardButtons(appId: string): Button[][] {
   ];
 }
 
-/** Envoie les cartes des meilleurs profils pas encore revus (au-dessus du seuil) ; renvoie le nombre de cartes. */
+/**
+ * Envoie les cartes des meilleurs profils pas encore revus. Classement relatif : les N meilleurs non écartés
+ * (au-dessus d'un plancher), car c'est ton Go / No go qui fait le tri, pas un seuil fixe sur des données publiques maigres.
+ */
 export async function sendReviewCards(env: Env, missionId: string, max?: number): Promise<number> {
   const cfg = await getConfig(env);
   const b = await bot(env);
-  const m = await env.DB.prepare("SELECT fiche, title FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string }>();
-  if (!m) return 0;
+  const m = await env.DB.prepare("SELECT fiche, title, status FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string; status: string }>();
+  if (!m || m.status !== "en_cours") return 0;
+  await reevaluatePool(env, missionId);
   const f = readFiche(m.fiche);
   const { results } = await env.DB.prepare(
     `SELECT a.id, a.score, a.score_detail, c.full_name, c.email, c.linkedin_url, c.source, c.source_url, c.profile
      FROM applications a JOIN candidates c ON c.id = a.candidate_id
      WHERE a.mission_id = ? AND a.state = 'score' AND a.score >= ? ORDER BY a.score DESC LIMIT ?`,
   )
-    .bind(missionId, cfg.matching.contact_threshold, max ?? cfg.mission.review_batch)
+    .bind(missionId, cfg.mission.review_min_score ?? 30, max ?? cfg.mission.review_batch)
     .all<CardRow>();
   const rows = results ?? [];
   if (!rows.length) return 0;
   await env.DB.batch(rows.map((r) => env.DB.prepare("UPDATE applications SET state = 'en_revue', updated_at = datetime('now') WHERE id = ?").bind(r.id)));
   if (!b) return rows.length;
-  await send(env, b, `🗂 Revue des profils · ${m.title}\n${rows.length} profil(s), du meilleur score au moins bon. Pour chacun : ✅ Go (à contacter) ou ❌ No go avec le motif (le profil reste en CV-thèque).`);
+  await send(
+    env,
+    b,
+    `🗂 Revue des profils · ${m.title}\n${rows.length} meilleur(s) profil(s), du meilleur score au moins bon. Le score reflète ce qui est visible publiquement : un profil peu détaillé peut être excellent.\nPour chacun : ✅ Go (à contacter) ou ❌ No go avec le motif (le profil reste en CV-thèque).`,
+  );
   for (const [i, r] of rows.entries()) await send(env, b, cardText(f, r, i + 1, rows.length), cardButtons(r.id));
   await send(env, b, "Quand tu as fini :", [
     [{ text: `✅ Go pour les ${Math.min(5, rows.length)} meilleurs restants`, data: `rvall:${missionId}:5` }],

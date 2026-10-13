@@ -60,7 +60,8 @@
     "shortlist_size": 4,
     "max_clarifying_questions": 3,
     "validation_reminder_hours": 2,
-    "review_batch": 20,
+    "review_batch": 10,
+    "review_min_score": 30,
     "continuous_sourcing_every_hours": 6
   },
   "matching": {

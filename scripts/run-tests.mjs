@@ -987,6 +987,29 @@ await test("matching : « Senior » ou « Employé » ne sont pas des statuts é
   assert(!X.matching.evaluate(f, { ...base, competences: ["EDIFACT", "X12", "Sterling", "AS2", "SFTP", "SQL", "BizTalk", "mapping"] }, {}, w).eliminated, "Linux absent d'un profil public n'élimine pas");
 });
 
+await test("vivier : règles rejouées sans IA (profil écarté à tort rétabli) ; cartes pour les meilleurs même sous 55", async () => {
+  const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_pool', 'Consultant EDI', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...edi(), questionnaire: [] })).run();
+  const mk = async (id, name, profile, state, reason) => {
+    await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES (?, ?, 'linkedin.com', ?, '')").bind("c_" + id, name, JSON.stringify(profile)).run();
+    await e.DB.prepare("INSERT INTO applications (id, mission_id, candidate_id, state, score, score_detail, eliminated_reason) VALUES (?, 'm_pool', ?, ?, 0, ?, ?)")
+      .bind("a_" + id, "c_" + id, state, JSON.stringify({ competences_souhaitees: 60, seniorite: 70, secteur: 60, langues: 50, soft_skills: 50 }), reason).run();
+  };
+  await mk("ke", "Ke Zhao", { intitule: "EDI Senior Consultant", statut: "Senior, Consulting", localisation: "Courbevoie, Île-de-France, France", competences: ["EDIFACT", "XML"] }, "ecarte", "statut Senior, Consulting non accepté");
+  await mk("ro", "Rohit K", { intitule: "Technical Lead", statut: "Head", localisation: "Noida, Uttar Pradesh, India", competences: ["EDIFACT", "Shell Scripting"] }, "ecarte", "statut Head non accepté");
+  const r = await X.pool.reevaluatePool(e, "m_pool");
+  assert(r.restored === 1 && r.eliminated === 1, JSON.stringify(r));
+  const ro = await e.DB.prepare("SELECT eliminated_reason FROM applications WHERE id = 'a_ro'").first("eliminated_reason");
+  assert(/hors de France/.test(ro), ro);
+  assert(/hors de France 1/.test(await X.pool.eliminationSummary(e, "m_pool")), "résumé");
+  tgSent.length = 0;
+  const n = await X.review.sendReviewCards(e, "m_pool");
+  const score = await e.DB.prepare("SELECT score FROM applications WHERE id = 'a_ke'").first("score");
+  assert(n === 1 && score < 55 && tgSent.some((t) => /Ke Zhao/.test(t.body.text ?? "")), `${n} carte(s), score ${score}`);
+  await e.DB.prepare("UPDATE missions SET status = 'terminee' WHERE id = 'm_pool'").run();
+  assert((await X.mission.sourceFromWeb(e, "m_pool", 3)) === 0, "mission clôturée : plus de recherche");
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

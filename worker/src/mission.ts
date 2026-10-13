@@ -4,6 +4,7 @@ import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
+import { eliminationSummary } from "./pool";
 import { sendReviewCards } from "./review";
 import { addBusinessHours, frDate, nextSlot, type ScheduleConfig } from "./schedule";
 import { buildBooleanQueries, enrichFromPublicPages, scoreAndStore, searchCvtheque, sourceRound, type SourcedProfile, type SourcingRound } from "./sourcing";
@@ -135,7 +136,9 @@ export async function sourceFromCvtheque(env: Env, id: string): Promise<number> 
 /** F3 (2/2) : profils publics, recherche booléenne. Tour 1 toujours ; tour 2 seulement si le vivier est trop maigre. */
 export async function sourceFromWeb(env: Env, id: string, round: SourcingRound = 1): Promise<number> {
   const cfg = await getConfig(env);
-  const f = readFiche((await getMission(env, id)).fiche);
+  const mission = await getMission(env, id);
+  if (mission.status !== "en_cours") return 0; // mission clôturée : plus aucune recherche
+  const f = readFiche(mission.fiche);
   if (round >= 2) {
     const good = await env.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = ? AND state = 'score' AND score >= ?")
       .bind(id, cfg.matching.contact_threshold)
@@ -159,7 +162,7 @@ export async function enrichTopProfiles(env: Env, id: string, max = 10): Promise
      WHERE a.mission_id = ? AND a.state = 'score' AND a.score >= ? AND COALESCE(c.linkedin_url, c.source_url) IS NOT NULL
      ORDER BY a.score DESC LIMIT ?`,
   )
-    .bind(id, Math.max(0, cfg.matching.contact_threshold - 10), max)
+    .bind(id, cfg.mission.review_min_score ?? 30, max)
     .all<{ candidate_id: string; url: string }>();
   const enriched = await enrichFromPublicPages(env, id, (results ?? []).map((r) => ({ candidateId: r.candidate_id, url: r.url })));
   if (enriched.length) await scoreAndStore(env, id, f, enriched, cfg.matching.weights, cfg.matching.tjm_tolerance);
@@ -174,7 +177,7 @@ export async function poolStats(env: Env, id: string): Promise<{ toReview: numbe
        SUM(state IN ('go','a_contacter','contacte','repondu','reponses_recues','qualifie','cv_formate','en_attente')) AS active
      FROM applications WHERE mission_id = ?`,
   )
-    .bind(cfg.matching.contact_threshold, id)
+    .bind(cfg.mission.review_min_score ?? 30, id)
     .first<{ review: number | null; eliminated: number | null; pending: number | null; active: number | null }>();
   return { toReview: Math.min(r?.review ?? 0, cfg.mission.review_batch), eliminated: r?.eliminated ?? 0, active: r?.active ?? 0, pending: r?.pending ?? 0 };
 }
@@ -218,9 +221,9 @@ export async function reportSourcing(
       `🔎 ${m.title} · sourcing terminé`,
       `CV-thèque : ${stats.cvtheque} profil(s) · Web public (booléen) : ${stats.web} profil(s)${stats.widened ? ` dont ${stats.widened} au tour élargi` : ""}`,
       `Pages publiques lues sans connexion : ${stats.enriched} profil(s) enrichi(s)`,
-      `Écartés (critères éliminatoires) : ${stats.eliminated}`,
+      `Écartés (critères éliminatoires) : ${stats.eliminated}${stats.eliminated ? ` (${await eliminationSummary(env, id)})` : ""}`,
       stats.toReview
-        ? `À revoir : ${stats.toReview} profil(s) au-dessus du seuil → cartes Go / No go ci-dessous`
+        ? `À revoir : les ${stats.toReview} meilleur(s) profil(s) → cartes Go / No go ci-dessous`
         : "Aucun profil assez proche de la fiche pour l'instant : je relance tout de suite avec d'autres variantes (intitulés, compétences, sites), puis toutes les 6 h.",
       `Échéance shortlist : ${m.deadline_at ? frDate(new Date(m.deadline_at)) : "—"}`,
       booleanLine ? `\nRecherche booléenne principale :\n${booleanLine}` : "",

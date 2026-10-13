@@ -21,4 +21,5 @@ export * as mail from "../worker/src/mail";
 export * as review from "../worker/src/review";
 export * as hunter from "../worker/src/hunter";
 export * as outbound from "../worker/src/outbound";
+export * as pool from "../worker/src/pool";
 export { default as worker } from "../worker/src/index";
