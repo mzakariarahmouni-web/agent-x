@@ -8,7 +8,7 @@
       },
       "volume": {
         "label": "Volume (scoring, messages, résumés)",
-        "chain": ["groq:qwen/qwen3.8-27b", "gemini:gemini-3.5-flash-lite", "groq:openai/gpt-oss-120b", "gemini:gemini-3.8-flash", "workersai:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "workersai:@cf/google/gemma-4-26b-a4b-it"]
+        "chain": ["groq:openai/gpt-oss-120b", "gemini:gemini-3.5-flash-lite", "groq:qwen/qwen3.8-27b", "gemini:gemini-3.8-flash", "workersai:@cf/meta/llama-3.3-70b-instruct-fp8-fast", "workersai:@cf/google/gemma-4-26b-a4b-it"]
       },
       "cv": {
         "label": "Rédaction du CV client",
