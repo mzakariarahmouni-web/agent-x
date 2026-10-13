@@ -210,6 +210,7 @@ const calls = [];
 let geminiMode = "ok";
 let groqMode = "ok";
 const tgSent = [];
+let existingWebhook = "";
 const fakeFetch = async (url, init = {}) => {
   const u = new URL(String(url));
   const ok = (d) => new Response(JSON.stringify(d), { status: 200, headers: { "content-type": "application/json" } });
@@ -242,6 +243,7 @@ const fakeFetch = async (url, init = {}) => {
     const body = init.body instanceof FormData ? Object.fromEntries(init.body.entries()) : JSON.parse(init.body ?? "{}");
     tgSent.push({ method, body });
     if (method === "getMe") return ok({ ok: true, result: { username: "agentx_test_bot" } });
+    if (method === "getWebhookInfo") return ok({ ok: true, result: { url: existingWebhook } });
     return ok({ ok: true, result: { message_id: tgSent.length } });
   }
   if (u.host === "oauth2.googleapis.com") return ok({ access_token: "at" });
@@ -624,6 +626,25 @@ await test("pages : configuration servie, lien de questionnaire inconnu → 404,
   const tok = await X.security.derivedSecret(env.ADMIN_TOKEN, "extension");
   const ok = await X.worker.fetch(new Request("https://x/api/linkedin/queue", { headers: { "x-agent-x-token": tok } }), env, ctx);
   assert(ok.status === 200 && (await ok.json()).ok, "file");
+});
+
+await test("Telegram : un bot déjà utilisé par un autre projet (boutique) n'est jamais détourné", async () => {
+  const hook = "https://agent-x.test.workers.dev/telegram/webhook";
+  existingWebhook = "https://atelier-ecrin.exemple.workers.dev/telegram";
+  tgSent.length = 0;
+  let err;
+  try {
+    await X.telegram.setupBot(env, "123:abc", hook, "s");
+  } catch (e) {
+    err = e;
+  }
+  assert(err && /déjà utilisé par un autre projet/.test(err.message), String(err));
+  assert(!tgSent.some((m) => m.method === "setWebhook"), "webhook de la boutique écrasé");
+  existingWebhook = hook;
+  await X.telegram.setupBot(env, "123:abc", hook, "s");
+  existingWebhook = "";
+  await X.telegram.setupBot(env, "123:abc", hook, "s");
+  assert(tgSent.filter((m) => m.method === "setWebhook").length === 2, "bot dédié non relié");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

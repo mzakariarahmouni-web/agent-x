@@ -113,6 +113,11 @@ export const COMMANDS = [
 
 export async function setupBot(env: Env, token: string, webhookUrl: string, secret: string): Promise<{ username: string }> {
   const me = (await tg(env, token, "getMe", {})) as { username: string };
+  // Garde-fou : un bot déjà branché sur un autre projet (ex. la boutique) n'est jamais détourné.
+  const info = (await tg(env, token, "getWebhookInfo", {})) as { url?: string };
+  if (info?.url && info.url !== webhookUrl) {
+    throw new Error(`Le bot @${me.username} est déjà utilisé par un autre projet (${new URL(info.url).host}). Créez un bot dédié à Agent X avec @BotFather (/newbot).`);
+  }
   await tg(env, token, "setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query"], drop_pending_updates: true });
   await tg(env, token, "setMyCommands", { commands: COMMANDS });
   return { username: me.username };

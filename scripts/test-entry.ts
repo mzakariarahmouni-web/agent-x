@@ -15,4 +15,5 @@ export * as pages from "../worker/src/candidate-pages";
 export * as bot from "../worker/src/bot";
 export * as security from "../worker/src/security";
 export * as linkedin from "../worker/src/linkedin-api";
+export * as telegram from "../worker/src/telegram";
 export { default as worker } from "../worker/src/index";

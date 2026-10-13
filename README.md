@@ -26,6 +26,8 @@ Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (G
 
 Chaque `git push` sur `main` redéploie ensuite automatiquement.
 
+Isolation : Agent X n'utilise que ses propres ressources, toutes nommées `agent-x` (Worker, base D1, stockage KV, Workflow `agent-x-mission`). Il ne lit ni ne modifie aucune ressource d'un autre projet du même compte. Seul le quota gratuit de Workers AI est commun à tout le compte ; pour une séparation totale, utilisez un compte Cloudflare dédié.
+
 Variante : déploiement par GitHub Actions. Ajoutez les secrets `CLOUDFLARE_API_TOKEN` (modèle « Modifier les Workers ») et `CLOUDFLARE_ACCOUNT_ID` dans GitHub → Settings → Secrets and variables → Actions. Les tests tournent à chaque push ; le déploiement est ignoré tant que ces secrets sont absents.
 
 ### 2. Configurer (page web)
@@ -44,6 +46,8 @@ Ouvrez `https://agent-x.<votre-sous-domaine>.workers.dev/config`, entrez votre `
 Workers AI est déjà inclus dans votre compte Cloudflare : aucune clé à saisir.
 
 ### 3. Relier Telegram
+
+Agent X a **son propre bot**, distinct de tout autre projet : créez-le avec @BotFather (`/newbot`), ne réutilisez jamais le jeton d'un bot existant. Par sécurité, Agent X refuse de se brancher sur un bot déjà utilisé ailleurs.
 
 Dans la page de configuration, section Telegram : **Relier mon Telegram**, puis ouvrez le lien affiché et touchez **Démarrer**. Le bot ne répond qu'à vous.
 

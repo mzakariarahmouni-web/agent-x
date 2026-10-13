@@ -11,3 +11,4 @@
   - délai = 48 h ouvrées (jours fériés français calculés), envois seulement dans les créneaux.
 - IA : toujours passer par `ai()` (worker/src/ai/router.ts), jamais appeler un fournisseur directement ; une sortie JSON a toujours un `validate`.
 - Tests : `npm test` doit rester vert avant tout push (CI GitHub Actions).
+- Isolation stricte avec les autres projets de Zacharie (dont la boutique « atelier-ecrin ») : ressources Cloudflare propres à agent-x, bot Telegram dédié ; ne jamais réutiliser ni toucher les ressources ou le bot d'un autre projet.
