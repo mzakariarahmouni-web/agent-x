@@ -118,7 +118,10 @@ export async function setupBot(env: Env, token: string, webhookUrl: string, secr
   if (info?.url && info.url !== webhookUrl) {
     throw new Error(`Le bot @${me.username} est déjà utilisé par un autre projet (${new URL(info.url).host}). Créez un bot dédié à Agent X avec @BotFather (/newbot).`);
   }
-  await tg(env, token, "setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query"], drop_pending_updates: true });
-  await tg(env, token, "setMyCommands", { commands: COMMANDS });
+  // Déjà branché ici : on ne refait pas l'appel (Telegram limite les appels répétés à setWebhook).
+  if (info?.url !== webhookUrl) {
+    await tg(env, token, "setWebhook", { url: webhookUrl, secret_token: secret, allowed_updates: ["message", "callback_query"], drop_pending_updates: true });
+    await tg(env, token, "setMyCommands", { commands: COMMANDS });
+  }
   return { username: me.username };
 }

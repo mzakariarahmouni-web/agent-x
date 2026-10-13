@@ -664,7 +664,7 @@ await test("Telegram : un bot déjà utilisé par un autre projet (boutique) n'e
   await X.telegram.setupBot(env, "123:abc", hook, "s");
   existingWebhook = "";
   await X.telegram.setupBot(env, "123:abc", hook, "s");
-  assert(tgSent.filter((m) => m.method === "setWebhook").length === 2, "bot dédié non relié");
+  assert(tgSent.filter((m) => m.method === "setWebhook").length === 1, "le webhook déjà en place ne doit pas être redemandé ; le bot dédié doit être relié");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

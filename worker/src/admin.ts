@@ -62,7 +62,7 @@ async function status(env: Env): Promise<Response> {
   return json({
     ok: true,
     configured,
-    telegram: { linked: !!(await getSetting(env, "telegram_chat_id")), username: await getSetting(env, "telegram_username") },
+    telegram: await telegramStatus(env),
     gmail: await getSetting(env, "gmail_address"),
     public_url: await getSetting(env, "public_url"),
     workers_ai: !!env.AI,
@@ -95,6 +95,13 @@ async function savePrefs(env: Env, req: Request): Promise<Response> {
   if (b.cv_brand && typeof b.cv_brand === "object") await setSetting(env, "cv_brand", JSON.stringify(b.cv_brand));
   if (b.config && typeof b.config === "object") await setSetting(env, "config", JSON.stringify(b.config));
   return json({ ok: true });
+}
+
+async function telegramStatus(env: Env): Promise<{ linked: boolean; username: string | null; link: string | null }> {
+  const linked = !!(await getSetting(env, "telegram_chat_id"));
+  const username = await getSetting(env, "telegram_username");
+  const link = !linked && username ? `https://t.me/${username}?start=${(await derivedSecret(env.ADMIN_TOKEN!, "telegram-link")).slice(0, 16)}` : null;
+  return { linked, username, link };
 }
 
 async function linkTelegram(env: Env, req: Request): Promise<Response> {
@@ -147,6 +154,16 @@ async function googleCallback(env: Env, req: Request): Promise<Response> {
 }
 
 export async function handleAdmin(env: Env, req: Request, path: string): Promise<Response> {
+  try {
+    return await routeAdmin(env, req, path);
+  } catch (e) {
+    // Toujours une réponse lisible par la page : le message d'erreur réel, jamais une page d'erreur brute.
+    console.error("admin", e);
+    return json({ ok: false, error: (e as Error).message.slice(0, 400) || "Erreur inconnue" }, 500);
+  }
+}
+
+async function routeAdmin(env: Env, req: Request, path: string): Promise<Response> {
   if (!env.ADMIN_TOKEN) return json({ ok: false, error: "ADMIN_TOKEN manquant dans Cloudflare." }, 503);
   if (path === "/api/admin/login" && req.method === "POST") return login(env, req);
   if (!(await isAdmin(env, req))) return path.startsWith("/oauth/") ? Response.redirect(`${new URL(req.url).origin}/config`, 302) : json({ ok: false, error: "Session expirée." }, 401);

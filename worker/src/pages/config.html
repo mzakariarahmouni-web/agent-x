@@ -100,7 +100,7 @@ async function load() {
   </section>
 
   <section><h2>3. Telegram</h2><div class="muted">Après avoir enregistré le jeton du bot, reliez-le à votre conversation.</div>
-    <div class="row"><button id="tg">${s.telegram.linked ? "Relier à nouveau" : "Relier mon Telegram"}</button><span id="tgOut" class="muted">${s.telegram.username ? "@" + s.telegram.username : ""}</span></div>
+    <div class="row"><button id="tg">${s.telegram.linked ? "Relier à nouveau" : "Relier mon Telegram"}</button><span id="tgOut" class="muted">${s.telegram.linked ? "✓ relié à @" + s.telegram.username : s.telegram.link ? `Bot prêt. Ouvrez ce lien puis touchez « Démarrer » : <a href="${s.telegram.link}" target="_blank" rel="noopener">${s.telegram.link}</a>` : ""}</span></div>
   </section>
 
   <section><h2>4. Gmail</h2><div class="muted">Les emails partent de votre boîte, un par un, aux bons créneaux. URI de redirection à déclarer chez Google : <code>${callback}</code></div>
