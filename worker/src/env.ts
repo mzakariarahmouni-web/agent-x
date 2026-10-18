@@ -6,6 +6,7 @@ export interface Env {
   FILES: KVNamespace;
   AI?: Ai;
   MISSION: Workflow<MissionParams>;
+  PLANIFICATEUR?: Workflow<Record<string, never>>;
   PUBLIC_URL?: string;
   /** Mot de passe de la page de configuration ; sert aussi à dériver la clé de chiffrement des secrets. */
   ADMIN_TOKEN?: string;

@@ -1192,6 +1192,18 @@ await test("fiche candidat niveaux 3 et 4 : compte rendu Telegram structuré par
   assert(/^Fiche_candidat_L_R_/.test(doc.filename) && txt.includes("Fiche candidat — L. R.") && txt.includes("Préavis de 3 mois") && !/Roux|Léa/.test(txt), doc.filename);
 });
 
+await test("planificateur : un passage toutes les 15 min au plus (jamais deux envois en double), Workflow démarré une seule fois", async () => {
+  const e = await makeEnv();
+  assert((await X.cron.runCron(e)) === true, "premier passage");
+  assert((await X.cron.runCron(e)) === false, "second passage immédiat refusé");
+  await e.DB.prepare("UPDATE settings SET value = datetime('now', '-16 minutes') WHERE key = 'cron_last'").run();
+  assert((await X.cron.runCron(e)) === true, "passage suivant");
+  const created = [];
+  e.PLANIFICATEUR = { async create({ id }) { created.push(id); return { id }; }, async get(id) { return { async status() { return { status: "running" }; } }; } };
+  await X.cron.ensureScheduler(e);
+  assert(created.length === 1 && (await X.db.getSetting(e, "planificateur_id")) === created[0], created.join());
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

@@ -1,12 +1,12 @@
 import { configPage, handleAdmin } from "./admin";
 import { handleTelegram } from "./bot";
 import { followUpPage, questionnairePage, questionnaireSubmit, stopPage } from "./candidate-pages";
-import { runCron } from "./cron";
+import { ensureScheduler, runCron } from "./cron";
 import type { Env } from "./env";
 import { handleLinkedin } from "./linkedin-api";
 import { ensureSchema } from "./migrate";
 
-export { MissionWorkflow } from "./workflow";
+export { MissionWorkflow, SchedulerWorkflow } from "./workflow";
 
 const text = (t: string, status = 200) => new Response(t, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 
@@ -16,6 +16,7 @@ export default {
     const path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       await ensureSchema(env);
+      ctx.waitUntil(ensureScheduler(env).catch((e) => console.error("planificateur", e)));
       if (path === "/" || path === "/config") return configPage(env);
       if (path === "/sante") return text("ok");
       if (path === "/telegram/webhook" && req.method === "POST") return handleTelegram(env, req, ctx);

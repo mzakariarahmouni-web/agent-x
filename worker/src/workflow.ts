@@ -24,6 +24,7 @@ import {
 import { applyMessage, type ChannelMode, closeReview, draftModel, type MessageModel, remindReview, sendMessageValidation, sendReviewCards } from "./review";
 import { parseSender, readFiche } from "./fiche";
 import { getSetting } from "./db";
+import { runCron } from "./cron";
 import { ensureSchema } from "./migrate";
 import { reevaluatePool } from "./pool";
 import { SearchUnavailable } from "./search";
@@ -285,5 +286,29 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         });
       }
     }
+  }
+}
+
+/**
+ * Planificateur : se réveille toutes les 15 minutes et lance les tâches (contacts aux créneaux, relances,
+ * réponses email, rappels, purge RGPD). Passe la main à une nouvelle instance au bout d'environ 3 semaines
+ * (limite de pas d'un Workflow).
+ */
+export class SchedulerWorkflow extends WorkflowEntrypoint<Env, Record<string, never>> {
+  async run(_event: WorkflowEvent<Record<string, never>>, step: WorkflowStep): Promise<string> {
+    const env = this.env;
+    for (let i = 0; i < 2000; i++) {
+      await step.do(`passage#${i}`, { retries: { limit: 2, delay: "1 minute" as const, backoff: "constant" as const }, timeout: "10 minutes" as const }, async () => {
+        await ensureSchema(env);
+        return runCron(env);
+      });
+      await step.sleep(`pause#${i}`, "15 minutes");
+    }
+    await step.do("relais", async () => {
+      const inst = await env.PLANIFICATEUR!.create({ id: `planif-${Date.now()}`, params: {} });
+      await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('planificateur_id', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(inst.id).run();
+      return inst.id;
+    });
+    return "relais passé";
   }
 }
