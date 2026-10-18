@@ -27,6 +27,8 @@ async function remindValidations(env: Env): Promise<void> {
 }
 
 export async function runCron(env: Env, cron: string): Promise<void> {
+  // Dernier passage du planificateur (visible dans /etat) : prouve que les créneaux d'envoi tournent.
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('cron_last', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')").run();
   if (cron === "0 2 * * *") {
     const n = await purgeInactive(env);
     await env.DB.prepare("DELETE FROM usage WHERE day < date('now', '-62 days')").run();

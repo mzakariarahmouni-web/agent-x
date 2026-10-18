@@ -115,7 +115,8 @@ async function status(env: Env, b: Bot): Promise<void> {
   const lines = rows.length
     ? rows.map((r) => `${r.open_until && Date.parse(r.open_until) > Date.now() ? "⏸" : "✅"} ${r.provider} : ${r.requests} appel(s)${r.errors ? ` · ${r.errors} erreur(s)` : ""}${r.last_error && r.errors ? `\n   ${r.last_error.slice(0, 90)}` : ""}`)
     : ["Aucun appel aujourd'hui."];
-  await send(env, b, `📊 Fournisseurs du jour (UTC)\n${lines.join("\n")}`);
+  const cron = await getSetting(env, "cron_last");
+  await send(env, b, `📊 Fournisseurs du jour (UTC)\n${lines.join("\n")}\n\n⏱ Planificateur (envois, relances) : ${cron ? `dernier passage ${cron} UTC` : "pas encore vu"}`);
 }
 
 async function handleText(env: Env, b: Bot, msg: TgMessage, ctx: ExecutionContext): Promise<void> {

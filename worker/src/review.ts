@@ -272,8 +272,8 @@ Réponds uniquement en JSON : { "accroche": "" }`,
 
 /** Validation du message : modèle, 2 exemples personnalisés, choix du canal. */
 export async function sendMessageValidation(env: Env, missionId: string, model: MessageModel, reminder = 0): Promise<void> {
-  const m = await env.DB.prepare("SELECT fiche, title, sender_name FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string; sender_name: string | null }>();
-  if (!m) return;
+  const m = await env.DB.prepare("SELECT fiche, title, sender_name, status FROM missions WHERE id = ?").bind(missionId).first<{ fiche: string; title: string; sender_name: string | null; status: string }>();
+  if (!m || m.status !== "en_cours") return; // mission clôturée : plus de message à valider
   const f = readFiche(m.fiche);
   const sender = m.sender_name || (await getSetting(env, "sender_default"));
   const { results } = await env.DB.prepare(
@@ -350,6 +350,8 @@ export async function reviewPending(env: Env, missionId: string): Promise<number
 
 /** Rappel de revue (toutes les 2 h sans décision). */
 export async function remindReview(env: Env, missionId: string, n: number): Promise<void> {
+  const st = await env.DB.prepare("SELECT status FROM missions WHERE id = ?").bind(missionId).first<{ status: string }>();
+  if (st?.status !== "en_cours") return;
   const left = await reviewPending(env, missionId);
   if (!left) return;
   await notify(env, `⏰ Rappel ${n} · ${left} profil(s) attendent ton Go / No go (cartes plus haut).`, [

@@ -24,6 +24,7 @@ import {
 import { applyMessage, type ChannelMode, closeReview, draftModel, type MessageModel, remindReview, sendMessageValidation, sendReviewCards } from "./review";
 import { parseSender, readFiche } from "./fiche";
 import { getSetting } from "./db";
+import { ensureSchema } from "./migrate";
 import { reevaluatePool } from "./pool";
 import { SearchUnavailable } from "./search";
 import { notify } from "./telegram";
@@ -134,6 +135,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     const id = event.payload.missionId;
     const env = this.env;
     const cfg = await step.do("config", async () => {
+      await ensureSchema(env);
       const c = await getConfig(env);
       return {
         reminderHours: c.mission.validation_reminder_hours,
