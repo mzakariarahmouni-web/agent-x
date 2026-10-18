@@ -1,11 +1,11 @@
 import { ai } from "./ai/router";
 import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
-import { experienceBounds, type Fiche, readFiche } from "./fiche";
+import { experienceBounds, type Fiche, readFiche, remuneration } from "./fiche";
 import { findMissingEmails } from "./hunter";
 import { reevaluatePool } from "./pool";
 import { careerYears, stabilityOf } from "./talent";
-import { displayLocation, hasSkill, isLanguage, profileTerms } from "./matching";
+import { displayLocation, hasSkill, isLanguage, preClass, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
 import type { SourcedProfile } from "./sourcing";
@@ -42,7 +42,12 @@ interface CardRow {
 /** Texte d'une carte de revue (fonction pure, testée). */
 export function cardText(f: Fiche, r: CardRow, rank: number, total: number): string {
   const p = parseJson<SourcedProfile>(r.profile, { source: r.source });
-  const detail = parseJson<{ a_verifier?: string[]; couverture_obligatoires?: number } & Record<string, number>>(r.score_detail, {});
+  const detail = parseJson<{ a_verifier?: string[]; couverture_obligatoires?: number; preuves?: Record<string, string>; vigilance?: string; ouverture?: string } & Record<string, unknown>>(r.score_detail, {});
+  const cls = preClass(r.score, false, detail.a_verifier ?? []);
+  const LABELS: Record<string, string> = { competences_souhaitees: "Compétences", seniorite: "Séniorité", secteur: "Secteur", langues: "Langues", soft_skills: "Savoir-être" };
+  const proofs = Object.entries(detail.preuves ?? {})
+    .slice(0, 3)
+    .map(([k, v]) => `• ${LABELS[k] ?? k} : ${v}${typeof detail[k] === "number" ? ` — ${Math.round((detail[k] as number) / 20)}/5` : ""}`);
   const must = f.competences_obligatoires.filter((s) => !isLanguage(s));
   const covered = must.filter((s) => hasSkill(profileTerms(p), s));
   const strengths: string[] = [];
@@ -56,15 +61,19 @@ export function cardText(f: Fiche, r: CardRow, rank: number, total: number): str
   const lieu = displayLocation(p.localisation, r.source_url ?? r.linkedin_url);
   const link = r.linkedin_url || r.source_url;
   return [
-    `👤 ${rank}/${total} · ${r.full_name ?? "Profil"} — ${r.score ?? "?"}/100`,
+    `👤 ${rank}/${total} · [Classe ${cls} | ${r.score ?? "?"}/100] ${r.full_name ?? "Profil"}`,
     where,
     `📍 ${lieu}`,
     xp,
     strengths.length ? `✅ ${strengths.slice(0, 2).join(" · ")}` : "",
     stabilityOf(p).label ? `🏢 ${stabilityOf(p).label}` : "",
-    detail.a_verifier?.length ? `⚠️ ${detail.a_verifier.join(" ; ")}` : "",
+    ...proofs,
+    detail.ouverture ? `🟢 Signal d'ouverture : ${detail.ouverture}` : "",
+    detail.vigilance ? `⚠️ Vigilance : ${detail.vigilance}` : "",
+    detail.a_verifier?.length ? `❔ ${detail.a_verifier.join(" ; ")}` : "",
     `📍 Source : ${link ? new URL(link).hostname.replace(/^www\./, "") : r.source} · ✉️ email : ${r.email ? "oui" : "non"}`,
     link ?? "",
+    `→ Proposition : ${cls === "A" ? "GO (contact prioritaire)" : "GO si le vivier A est insuffisant"}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -234,13 +243,15 @@ export async function draftModel(env: Env, f: Fiche, sender: string, instruction
     label: "modèle de premier contact",
     missionId,
     system: `Tu écris le message type de premier contact d'un recruteur à des consultants, en français, vouvoiement, sans emoji ni jargon.
-Il sera personnalisé automatiquement : garde exactement les variables {prenom} (prénom du candidat) et {accroche} (une phrase sur son parcours, ajoutée par profil).
-Structure : « Bonjour {prenom}, » ; {accroche} ; la mission en une ou deux phrases (secteur, durée, lieu ou télétravail) ; une question simple pour répondre.
-350 caractères au maximum hors variables. Pas de lien, pas de signature, pas de présentation de l'expéditeur (« Je suis… ») : tout cela est ajouté ensuite. « objet » : 6 mots au maximum.
+Il sera personnalisé automatiquement : garde exactement les variables {prenom} (prénom du candidat) et {accroche} (un fait réel et précis de son parcours, et pourquoi lui pour cette mission).
+Structure (méthode des meilleurs sourceurs, 51 à 100 mots au total avec l'accroche) : « Bonjour {prenom}, » ; {accroche} ;
+l'essentiel de la mission en une ou deux phrases : secteur du client, compétences clés, durée, lieu et télétravail, fourchette de TJM ou de salaire si elle est connue ;
+l'enjeu principal du client ; UNE seule question d'appel à l'action (ex. « Seriez-vous ouvert à un échange de 15 minutes cette semaine ? »).
+Jamais de message générique ni de superlatifs. Pas de lien, pas de signature, pas de présentation de l'expéditeur (« Je suis… ») : tout cela est ajouté ensuite. « objet » : 6 mots au maximum.
 Réponds uniquement en JSON : { "objet": "", "modele": "" }`,
     prompt: previous
       ? `Modèle actuel : ${JSON.stringify(previous)}\nModification demandée par le recruteur : « ${instruction} »\nRenvoie le modèle complet modifié.`
-      : `Expéditeur : ${sender}\nMission : ${JSON.stringify({ intitule: f.intitule, secteur: f.secteur, localisation: f.localisation, teletravail: f.teletravail, duree: f.duree, date_debut: f.date_debut, competences: f.competences_obligatoires })}`,
+      : `Expéditeur : ${sender}\nMission : ${JSON.stringify({ intitule: f.intitule, secteur: f.secteur, localisation: f.localisation, teletravail: f.teletravail, duree: f.duree, date_debut: f.date_debut, competences: f.competences_obligatoires, remuneration: remuneration(f), enjeu: f.resultats_attendus[0] ?? f.contexte })}`,
     json: true,
     maxTokens: 800,
     validate: (d) => (!d?.modele ? "modèle vide" : !d.modele.includes("{accroche}") ? "variable {accroche} absente" : null),
@@ -261,12 +272,13 @@ export async function accroche(env: Env, f: Fiche, p: SourcedProfile, missionId?
       family: "volume",
       label: "accroche personnalisée",
       missionId,
-      system: `Tu écris UNE phrase (160 caractères au maximum) qui relie le parcours réel du candidat à la mission, en vouvoiement, sans flatterie excessive ni information inventée.
+      system: `Tu écris UNE phrase (200 caractères au maximum), en vouvoiement : un fait réel et précis du parcours du candidat (projet, technologie, entreprise, réalisation) et pourquoi il correspond à l'enjeu de la mission.
+Pas de flatterie, rien d'inventé ; si le profil est peu détaillé, appuie-toi sur son intitulé et sa compétence principale.
 Réponds uniquement en JSON : { "accroche": "" }`,
       prompt: `Mission : ${f.intitule} (${f.competences_obligatoires.join(", ")})\nCandidat : ${JSON.stringify({ intitule: p.intitule, entreprise: p.entreprise, competences: p.competences?.slice(0, 8), secteurs: p.secteurs, annees: p.annees_experience })}`,
       json: true,
       maxTokens: 300,
-      validate: (d) => (d?.accroche && d.accroche.length <= 220 ? null : "accroche absente ou trop longue"),
+      validate: (d) => (d?.accroche && d.accroche.length <= 260 ? null : "accroche absente ou trop longue"),
     });
     return data.accroche.trim();
   } catch {
@@ -331,6 +343,26 @@ export async function applyMessage(env: Env, missionId: string, model: MessageMo
   const out = await planGoContacts(env, missionId);
   await journal(env, "recruteur", "message_valide", { canal: mode, ...out }, { mission: missionId });
   return out;
+}
+
+/**
+ * Apprentissage à partir des décisions : profils retenus (Go et au-delà, placés en tête), écartés (No go avec motif)
+ * et refusés par le client. Sert d'exemples à la pré-notation des profils suivants.
+ */
+export async function learningExamples(env: Env, missionId: string): Promise<string> {
+  const { results } = await env.DB.prepare(
+    `SELECT a.state, a.client_decision, c.profile FROM applications a JOIN candidates c ON c.id = a.candidate_id
+     WHERE a.mission_id = ? AND (a.state IN ('go','a_contacter','contacte','repondu','reponses_recues','qualifie','cv_formate','presente','place','non_retenu'))
+     ORDER BY (a.state = 'place') DESC, a.updated_at DESC LIMIT 8`,
+  )
+    .bind(missionId)
+    .all<{ state: string; client_decision: string | null; profile: string }>();
+  const desc = (p: SourcedProfile) => `${p.intitule ?? "?"} (${(p.competences ?? []).slice(0, 5).join(", ")}${typeof p.annees_experience === "number" ? `, ${p.annees_experience} ans` : ""})`;
+  const kept = (results ?? []).map((r) => {
+    const p = parseJson<SourcedProfile>(r.profile, { source: "web" });
+    return r.state === "place" ? `- ${desc(p)} → placé chez le client` : r.state === "non_retenu" ? `- ${desc(p)} → présenté mais non retenu par le client` : `- ${desc(p)} → retenu par le recruteur (Go)`;
+  });
+  return [kept.join("\n"), await recentNogo(env, missionId)].filter(Boolean).join("\n");
 }
 
 /** Profils récemment écartés (No go) sur la mission : exemples pour affiner le tri (apprentissage par les No go). */

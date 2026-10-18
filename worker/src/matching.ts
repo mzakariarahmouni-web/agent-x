@@ -98,6 +98,29 @@ export function oversized(f: Fiche, p: Profile): string | null {
   return null;
 }
 
+/** Preuves et signaux rendus par la pré-notation (un fait observable par critère). */
+export interface Evidence {
+  preuves?: Record<string, string>;
+  vigilance?: string;
+  ouverture?: string;
+}
+
+/**
+ * Classe de préqualification (méthode du sourceur) : A = éliminatoires OK et score ≥ 75 (contact prioritaire),
+ * B = éliminatoires OK, score plus bas ou informations manquantes, C = un éliminatoire KO (pas de contact).
+ */
+export function preClass(score: number | null | undefined, eliminated: boolean, toVerify: string[] = []): "A" | "B" | "C" {
+  if (eliminated) return "C";
+  return (score ?? 0) >= 75 && toVerify.filter((t) => !/TJM/.test(t)).length === 0 ? "A" : "B";
+}
+
+/** Preuves gardées avec le score (relues par la revue, la shortlist et le tableau de bord). */
+export function evidenceOf(s: (Partial<SubScores> & Evidence) | undefined): Evidence {
+  if (!s) return {};
+  const preuves = s.preuves && typeof s.preuves === "object" ? Object.fromEntries(Object.entries(s.preuves).filter(([, v]) => typeof v === "string" && v.trim()).map(([k, v]) => [k, String(v).slice(0, 160)])) : undefined;
+  return { ...(preuves && Object.keys(preuves).length ? { preuves } : {}), ...(s.vigilance ? { vigilance: String(s.vigilance).slice(0, 160) } : {}), ...(s.ouverture ? { ouverture: String(s.ouverture).slice(0, 120) } : {}) };
+}
+
 export interface SubScores {
   competences_souhaitees: number;
   seniorite: number;
@@ -185,6 +208,10 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   const minYears = f.niveau_elargi.seniorite_min_annees ?? (f.seniorite_min_annees != null ? Math.max(0, f.seniorite_min_annees - 2) : null);
   const years = careerYears(p);
   if (minYears != null && years != null && years < minYears) reasons.push(`${years} ans d'expérience (minimum ${minYears})`);
+  // Entreprise à ne pas solliciter (le client, un concurrent exclu par le brief).
+  const ent = norm(p.entreprise ?? "");
+  const excludedCo = ent ? (f.entreprises_exclues ?? []).find((e) => norm(e) && (ent.includes(norm(e)) || norm(e).includes(ent))) : undefined;
+  if (excludedCo) reasons.push(`entreprise exclue (${p.entreprise})`);
   // Surdimensionné : trop d'expérience pour le poste, ou poste de direction pour une mission qui n'en est pas une.
   const over = oversized(f, p);
   if (over) reasons.push(over);

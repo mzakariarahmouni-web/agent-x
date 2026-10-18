@@ -28,6 +28,11 @@ export interface Fiche {
   soft_skills: string[];
   /** Exigences incluses : ce que le profil doit avoir ou accepter (hors compétences : habilitation, déplacements, astreintes…). */
   exigences: string[];
+  /** Brief (méthode « Who ») : résultats attendus à 3 et 6 mois, rôle réel, entreprises cibles et à exclure. */
+  resultats_attendus: string[];
+  role: string;
+  entreprises_cibles: string[];
+  entreprises_exclues: string[];
   /** Profils exclus : ce que le client ne veut pas (junior, profil 100 % technique, sortie d'ESN concurrente…). */
   profils_exclus: string[];
   eliminatoires: { critere: string; type: CritereType; valeur: string }[];
@@ -58,7 +63,9 @@ Règles :
 - N'invente rien qui ne soit pas dans la fiche ou dans les exigences connues du client ; quand tu supposes, écris-le dans « hypotheses ».
 - « competences_obligatoires » : seulement les exigences explicites et non négociables (3 à 6), en termes courts tels qu'ils figurent sur un CV (ex. « EDIFACT », pas « EDIFACT (messages EDI) ») ; les langues vont dans « langues », pas ici.
 - « intitule » : un seul intitulé court (ex. « Consultant EDI ») ; les variantes vont dans « synonymes ».
-- « eliminatoires » : uniquement des critères binaires vérifiables (disponibilité, statut, localisation, langue, TJM, compétence clé).
+- « eliminatoires » : 4 au maximum, uniquement des critères binaires vérifiables qui feraient rejeter un candidat sur-le-champ (disponibilité, statut, localisation, langue, TJM, compétence clé) ; les autres exigences deviennent des critères pondérés.
+- « resultats_attendus » : résultats mesurables attendus à 3 et 6 mois, s'ils se déduisent de la fiche ; « role » : « contributeur », « lead » ou « architecte » (séniorité réelle attendue).
+- « entreprises_cibles » / « entreprises_exclues » : entreprises où chercher en priorité / à ne pas solliciter (le client lui-même, ses concurrents directs si indiqué).
 - « niveau_elargi » : synonymes, intitulés voisins, compétences adjacentes pour ne rater aucun profil.
 - « niveau_exigeant » : les critères qu'un client exigeant durcira probablement (anticipation).
 - « questions_clarification » : 3 au maximum, seulement si une information manque vraiment (TJM, date, télétravail…).
@@ -77,7 +84,7 @@ const SHAPE = `{
  "date_debut": "", "duree": "", "statuts_acceptes": ["freelance" | "salarie" | "portage"],
  "budget": { "tjm_min": null, "tjm_max": null, "salaire_min": null, "salaire_max": null },
  "seniorite_min_annees": null, "seniorite_max_annees": null, "competences_obligatoires": [""], "competences_souhaitees": [""], "langues": [""], "soft_skills": [""],
- "exigences": [""], "profils_exclus": [""],
+ "exigences": [""], "profils_exclus": [""], "resultats_attendus": [""], "role": "", "entreprises_cibles": [""], "entreprises_exclues": [""],
  "eliminatoires": [{ "critere": "", "type": "competence|disponibilite|localisation|langue|statut|tjm|seniorite|autre", "valeur": "" }],
  "mots_cles": [""], "synonymes": [""],
  "niveau_elargi": { "intitules_proches": [""], "competences_adjacentes": [""], "seniorite_min_annees": null },
@@ -99,6 +106,8 @@ export function validateFiche(f: Partial<Fiche>): string | null {
   return null;
 }
 
+const arr2 = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x.trim()) : []);
+
 /** Les rubriques indispensables absentes donnent toujours lieu à une question au recruteur. */
 function requiredQuestions(raw: Partial<Fiche>, asked: string[]): string[] {
   const b = (raw.budget ?? {}) as Partial<Fiche["budget"]>;
@@ -109,6 +118,7 @@ function requiredQuestions(raw: Partial<Fiche>, asked: string[]): string[] {
   if (raw.seniorite_min_annees == null && !has(/exp[ée]rience|ann[ée]es/i)) out.push("Quelle fourchette d'expérience (minimum et maximum, en années) ?");
   else if (raw.seniorite_min_annees != null && raw.seniorite_max_annees == null && !has(/maximum|max\b|surdimension/i))
     out.push(`Expérience maximum ? (au-delà, les profils sont jugés surdimensionnés ; sans réponse : ${Number(raw.seniorite_min_annees) + 5} ans)`);
+  if (!arr2(raw.resultats_attendus).length && !has(/r[ée]sultat/i)) out.push("Quels résultats attendus à 3 et 6 mois (mesurables) ?");
   return [...new Set(out)];
 }
 
@@ -142,6 +152,10 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     soft_skills: arr(raw.soft_skills),
     exigences: arr(raw.exigences),
     profils_exclus: arr(raw.profils_exclus),
+    resultats_attendus: arr(raw.resultats_attendus),
+    role: String(raw.role ?? "").trim().toLowerCase(),
+    entreprises_cibles: arr(raw.entreprises_cibles),
+    entreprises_exclues: arr(raw.entreprises_exclues),
     eliminatoires: Array.isArray(raw.eliminatoires)
       ? raw.eliminatoires.filter((e) => e && e.critere).map((e) => ({ critere: String(e.critere), type: (e.type ?? "autre") as CritereType, valeur: String(e.valeur ?? "") }))
       : [],
@@ -149,7 +163,7 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     synonymes: arr(raw.synonymes),
     niveau_elargi: { intitules_proches: arr(el.intitules_proches), competences_adjacentes: arr(el.competences_adjacentes), seniorite_min_annees: num(el.seniorite_min_annees) },
     niveau_exigeant: { criteres_durcis: arr(raw.niveau_exigeant?.criteres_durcis) },
-    questions_clarification: requiredQuestions(raw, arr(raw.questions_clarification)).slice(0, maxQuestions + 1),
+    questions_clarification: requiredQuestions(raw, arr(raw.questions_clarification)).slice(0, maxQuestions + 2),
     hypotheses: arr(raw.hypotheses),
     questionnaire: Array.isArray(raw.questionnaire) ? raw.questionnaire : [],
   };
@@ -251,6 +265,8 @@ export function ficheSummary(f: Fiche): string {
     `🗣 Langues : ${f.langues.join(", ") || "—"}`,
     `✅ Exigences incluses : ${[...f.competences_obligatoires, ...f.exigences].join(", ") || "—"}`,
     `⛔ Profils exclus : ${f.profils_exclus.join(" ; ") || "—"}`,
+    `🧭 Rôle attendu : ${f.role || "—"} · Résultats à 3/6 mois : ${f.resultats_attendus.join(" ; ") || todo}`,
+    f.entreprises_cibles.length || f.entreprises_exclues.length ? `🏢 Entreprises cibles : ${f.entreprises_cibles.join(", ") || "—"} · à exclure : ${f.entreprises_exclues.join(", ") || "—"}` : "",
     f.date_debut || f.duree ? `🗓 ${[f.date_debut && `début ${f.date_debut}`, f.duree].filter(Boolean).join(" · ")}` : "",
     "",
     `Obligatoire : ${f.competences_obligatoires.join(", ") || "—"}`,

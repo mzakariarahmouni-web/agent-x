@@ -18,11 +18,12 @@ export interface Draft {
   message: string;
 }
 
+/** Séquence d'approche (arrêt immédiat dès réponse) : chaque relance apporte quelque chose de nouveau. */
 const STEP_INTENT = [
-  "Premier contact : qui écrit, la mission en une phrase (secteur, durée, lieu ou télétravail), une référence concrète au parcours du candidat, et une question simple pour répondre.",
-  "Relance 1 : très courte, cordiale, rappelle la mission en une ligne.",
-  "Relance 2 : apporte une information nouvelle et utile sur la mission (démarrage, contexte, budget si connu).",
-  "Relance 3 (message de clôture) : dernière prise de contact, sans pression ; propose de rester en contact pour d'autres missions.",
+  "Premier contact : un fait précis du parcours du candidat, pourquoi lui, l'essentiel de la mission (secteur, compétences, durée, lieu, fourchette de TJM si connue) et une seule question.",
+  "Relance 1 (J+2) : courte et cordiale, rappelle la mission en une ligne et apporte UN élément nouveau (démarrage, contexte, enjeu, budget si connu).",
+  "Relance 2 (J+4, autre canal) : autre angle sur la mission ; si le moment n'est pas le bon pour lui, demande poliment s'il connaît quelqu'un que cela pourrait intéresser.",
+  "Relance 3 (J+7, clôture) : dernier message, sans pression ; propose de rester en contact pour de prochaines missions.",
 ];
 
 export async function draftMessage(
@@ -57,12 +58,23 @@ Candidat : ${JSON.stringify({ prenom: (p.nom ?? "").split(" ")[0] || null, intit
   return { objet: (data.objet ?? "").trim(), message: data.message.trim().slice(0, maxChars + 40) };
 }
 
-export function footer(channel: Channel, publicUrl: string, token: string, sender: string): string {
+/** Nom lisible de la source du profil (information RGPD, art. 14). */
+export function sourceName(source?: string | null): string {
+  const s = (source ?? "").toLowerCase();
+  if (/linkedin/.test(s)) return "LinkedIn";
+  if (/malt/.test(s)) return "Malt";
+  if (/github/.test(s)) return "GitHub";
+  if (/cvtheque|questionnaire/.test(s)) return "notre base de candidats";
+  return s ? s.replace(/^www\./, "") : "un profil professionnel public";
+}
+
+export function footer(channel: Channel, publicUrl: string, token: string, sender: string, source?: string | null): string {
   const q = `${publicUrl}/q/${token}`;
   const stop = `${publicUrl}/stop/${token}`;
+  const from = sourceName(source);
   return channel === "email"
-    ? `\n\nPour me répondre en 5 minutes : ${q}\n\n${sender}\n—\nVos coordonnées proviennent de votre profil professionnel public. Pour ne plus être contacté(e) et effacer vos données : ${stop}`
-    : `\n\nQuestionnaire (5 min) : ${q}\nNe plus être contacté(e) : ${stop}`;
+    ? `\n\nPour me répondre en 5 minutes : ${q}\n\n${sender}\n—\nJ'ai trouvé votre profil sur ${from}. Pour ne plus être contacté(e) et effacer vos données : ${stop}`
+    : `\n\nQuestionnaire (5 min) : ${q}\nProfil vu sur ${from}. Ne plus être contacté(e) : ${stop}`;
 }
 
 async function sentToday(env: Env, channel: Channel): Promise<number> {
@@ -148,7 +160,7 @@ export async function processDueContacts(env: Env, now = new Date(), limit = 10)
             message: renderModel(r.message_template, { prenom: (p.nom ?? "").split(" ")[0], accroche: await accroche(env, f, p, r.mission_id) }),
           }
         : await draftMessage(env, f, p, r.contact_step, channel, sender, cfg.outreach.max_chars, r.mission_id, r.message_template ?? undefined);
-    const body = draft.message + footer(channel, publicUrl, token, sender);
+    const body = draft.message + footer(channel, publicUrl, token, sender, p.source);
     if (channel === "email") {
       await sendMail(env, sender, r.email!, draft.objet || f.intitule, body);
       await journal(env, "contact", "email_envoye", { etape: r.contact_step }, { mission: r.mission_id, candidate: r.candidate_id });

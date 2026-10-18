@@ -30,7 +30,7 @@ await build({
 });
 const X = await import(out);
 const SCHEMA = readFileSync("migrations/0001_init.sql", "utf8");
-const SCHEMA2 = readFileSync("migrations/0002_revue.sql", "utf8") + "\n" + readFileSync("migrations/0003_talent.sql", "utf8");
+const SCHEMA2 = readFileSync("migrations/0002_revue.sql", "utf8") + "\n" + readFileSync("migrations/0003_talent.sql", "utf8") + "\n" + readFileSync("migrations/0004_semantique.sql", "utf8");
 
 // ───────────── Outils de test ─────────────
 let failed = 0;
@@ -352,8 +352,25 @@ const fakeFetch = async (url, init = {}) => {
 globalThis.fetch = fakeFetch;
 
 let aiMode = "ok";
+// Empreintes de test : sac de mots (avec quelques équivalences métier) projeté sur 64 dimensions.
+const EQUIV = { hris: "sirh", "systemes rh": "sirh", workday: "sirh", successfactors: "sirh" };
+function fakeEmbedding(text) {
+  const v = new Array(64).fill(0);
+  const words = text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+  for (let w of words) {
+    w = EQUIV[w] ?? w;
+    let h = 0;
+    for (const c of w) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    v[h % 64] += 1;
+  }
+  return v;
+}
 const fakeAI = {
   async run(model, input) {
+    if (/bge/.test(model)) {
+      calls.push("embedding");
+      return { data: input.text.map(fakeEmbedding) };
+    }
     calls.push("workersai");
     if (aiMode === "down") throw new Error("3040: Out of capacity");
     return { response: JSON.stringify(respond(input.messages[0].content, input.messages[1].content)) };
@@ -365,7 +382,7 @@ async function makeEnv() {
   const DB = new FakeD1();
   for (const s of X.migrate.splitSql(SCHEMA)) DB.db.exec(s);
   for (const s of X.migrate.splitSql(SCHEMA2)) DB.db.exec(s);
-  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '3')");
+  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '4')");
   const env = {
     DB,
     FILES: new FakeKV(),
@@ -668,7 +685,7 @@ await test("contacts : planifiés au créneau, email automatique et file LinkedI
   tokenA = apps.find((a) => !a.email).token;
   tokenB = apps.find((a) => a.email).token;
   const next = new Date(apps[0].next_action_at);
-  assert(hhmm(next) === "2026-10-20 17:30", `relance 1 à ${hhmm(next)}`);
+  assert(hhmm(next) === "2026-10-22 17:30", `relance 1 à ${hhmm(next)} (J+2 ouvrés)`);
 });
 
 await test("contacts : hors créneau (samedi), rien n'est envoyé, report au lundi", async () => {
@@ -890,7 +907,7 @@ await test("revue : No go avec motif (profil gardé en CV-thèque, motif appris)
   aiLog.length = 0;
   await X.mission.sourceFromWeb(rv, rvMission, 2);
   const scoring = aiLog.find((l) => /notes l'adéquation/.test(l.system));
-  assert(scoring && /déjà écartés par le recruteur/.test(scoring.prompt) && /hors budget/.test(scoring.prompt), "les No go ne nourrissent pas le scoring");
+  assert(scoring && /Décisions du recruteur/.test(scoring.prompt) && /hors budget/.test(scoring.prompt) && /retenu/.test(scoring.prompt), "les Go et No go ne nourrissent pas le scoring");
 });
 
 let rvModel;
@@ -1121,7 +1138,7 @@ await test("fiche de poste : rubriques toujours affichées (rémunération, lieu
   const s = X.fiche.ficheSummary(f);
   for (const k of ["Rémunération : ⚠️ à préciser", "Localisation : ⚠️ à préciser", "Expérience : ⚠️ à préciser", "Langues : Anglais B2", "Exigences incluses : EDIFACT, astreintes ponctuelles", "Profils exclus : profil junior"]) assert(s.includes(k), `${k}\n${s}`);
   assert(f.questions_clarification.some((q) => /TJM ou le salaire/.test(q)) && f.questions_clarification.some((q) => /Où se situe/.test(q)), f.questions_clarification.join(" | "));
-  const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, seniorite_max_annees: 9, questions_clarification: [] });
+  const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, seniorite_max_annees: 9, resultats_attendus: ["migration livrée à 6 mois"], questions_clarification: [] });
   assert(X.fiche.remuneration(g) === "salaire 50 000 à 60 000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
 });
 
@@ -1311,6 +1328,34 @@ await test("extraction par lots de 6 (réponses courtes, jamais de JSON tronqué
   const out = await X.sourcing.extractProfiles(e, hits, "m_x");
   const calls = aiLog.filter((l) => /extrais des profils/.test(l.system));
   assert(calls.length === 4 && out.length === 20 && new Set(out.map((p) => p.linkedin_url)).size === 20, `${calls.length} appels, ${out.length} profils`);
+});
+
+await test("CV-thèque par le sens : un « Consultant HRIS Workday » est retrouvé pour une fiche « Chef de projet SIRH » (empreintes calculées une fois)", async () => {
+  const e = await makeEnv();
+  const add = (id, p) => e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES (?, ?, 'cvtheque', ?, '')").bind(id, id, JSON.stringify(p)).run();
+  await add("c_hris", { intitule: "Consultant HRIS", competences: ["Workday", "paie", "gestion de projet"] });
+  await add("c_dev", { intitule: "Développeur Java", competences: ["Spring", "Kafka"] });
+  calls.length = 0;
+  const r = await X.semantic.semanticCvtheque(e, { ...sirh(), missions: ["déploiement SIRH"], competences_souhaitees: ["paie"] }, 5, 0.3);
+  assert(r[0]?.id === "c_hris" && !r.some((x) => x.id === "c_dev"), JSON.stringify(r.map((x) => [x.id, x.similarity])));
+  assert((await e.DB.prepare("SELECT COUNT(*) AS n FROM candidates WHERE embedding IS NOT NULL").first("n")) === 2, "empreintes enregistrées");
+  calls.length = 0;
+  await X.semantic.semanticCvtheque(e, sirh(), 5, 0.3);
+  assert(calls.filter((c) => c === "embedding").length === 1, "seule la fiche est recalculée");
+});
+
+await test("méthode sourceur : carte « Classe A/B | score » avec preuves par critère ; X-ray jumeaux et affinage depuis les profils retenus", async () => {
+  const row = { id: "a1", score: 82, score_detail: JSON.stringify({ seniorite: 80, a_verifier: [], preuves: { competences_souhaitees: "Workday 4 ans chez Engie", seniorite: "8 ans, lead sur 1 projet" }, vigilance: "pas de paie visible", ouverture: "profil Malt actif" }), full_name: "Léa R.", email: null, linkedin_url: "https://fr.linkedin.com/in/lea", source: "linkedin.com", source_url: "https://fr.linkedin.com/in/lea", profile: JSON.stringify({ intitule: "Chef de projet SIRH", localisation: "Paris", annees_experience: 8 }) };
+  const t = X.review.cardText(sirh(), row, 1, 3);
+  assert(/\[Classe A \| 82\/100\]/.test(t) && /Workday 4 ans chez Engie/.test(t) && /Vigilance : pas de paie/.test(t) && /Signal d'ouverture/.test(t) && /Proposition : GO/.test(t), t);
+  assert(X.matching.preClass(60, false) === "B" && X.matching.preClass(90, true) === "C", "classes");
+  const qs = X.sourcing.buildBooleanQueries({ ...sirh(), entreprises_cibles: ["Engie"] }, 3, 50, { employeurs: ["Sopra HR"], mots: ["Workday", "paie", "SIRH"] });
+  assert(qs.some((q) => q.label === "jumeaux Sopra HR" && /"Sopra HR"/.test(q.boolean)) && qs.some((q) => q.label === "jumeaux Engie"), qs.map((q) => q.label).join());
+  const aff = qs.find((q) => q.label === "affinage");
+  assert(aff && /"paie"/.test(aff.boolean) && !/"Workday"/.test(aff.boolean), `mots déjà obligatoires exclus : ${aff?.boolean}`);
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  assert(X.matching.evaluate({ ...sirh(), entreprises_exclues: ["Engie"] }, { intitule: "Chef de projet SIRH", entreprise: "ENGIE France", competences: ["SIRH"] }, {}, w).reasons.some((r) => /entreprise exclue/.test(r)), "entreprise exclue");
+  assert(/J'ai trouvé votre profil sur LinkedIn/.test(X.outreach.footer("email", "https://x", "t_1", "Z.", "fr.linkedin.com")), "source au premier contact");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

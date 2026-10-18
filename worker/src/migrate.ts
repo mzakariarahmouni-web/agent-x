@@ -1,6 +1,7 @@
 import m0001 from "../../migrations/0001_init.sql";
 import m0002 from "../../migrations/0002_revue.sql";
 import m0003 from "../../migrations/0003_talent.sql";
+import m0004 from "../../migrations/0004_semantique.sql";
 import type { Env } from "./env";
 
 /** Migrations embarquées : la base se crée seule au premier appel, sans commande à lancer. */
@@ -8,6 +9,7 @@ const MIGRATIONS: [number, string][] = [
   [1, m0001],
   [2, m0002],
   [3, m0003],
+  [4, m0004],
 ];
 
 let checked = false;

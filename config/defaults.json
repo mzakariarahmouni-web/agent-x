@@ -48,9 +48,9 @@
   "outreach": {
     "steps": [
       { "step": 0, "label": "Premier contact", "channel": "principal", "after_business_hours": 0, "slot": "premier_contact" },
-      { "step": 1, "label": "Relance 1", "channel": "meme", "after_business_hours": 6, "slot": "relance" },
-      { "step": 2, "label": "Relance 2", "channel": "meme", "after_business_hours": 20, "slot": "premier_contact" },
-      { "step": 3, "label": "Relance 3", "channel": "autre", "after_business_hours": 44, "slot": "premier_contact" }
+      { "step": 1, "label": "Relance 1 (nouvel élément)", "channel": "meme", "after_business_hours": 48, "slot": "relance" },
+      { "step": 2, "label": "Relance 2 (autre canal, recommandation)", "channel": "autre", "after_business_hours": 96, "slot": "premier_contact" },
+      { "step": 3, "label": "Relance 3 (clôture)", "channel": "meme", "after_business_hours": 168, "slot": "premier_contact" }
     ],
     "max_chars": 400,
     "email_daily_cap": 40,

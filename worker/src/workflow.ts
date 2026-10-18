@@ -240,7 +240,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       widened = good < cfg.poolTarget ? await sourceRoundSteps(env, step, id, 2, "sourcing:elargi") : 0;
     }
     // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
-    const enriched = legacy ? await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id)) : await enrichSteps(env, step, id, 9, "sourcing:lecture");
+    const enriched = legacy ? await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id)) : await enrichSteps(env, step, id, 15, "sourcing:lecture");
     await step.do("sourcing:rapport", async () => {
       await reevaluatePool(env, id);
       const pool = await poolStats(env, id);
@@ -255,7 +255,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       if (legacy) await this.resilient(step, "sourcing:variantes", () => sourceFromWeb(env, id, 3));
       else await sourceRoundSteps(env, step, id, 3, "sourcing:variantes", 4);
       if (legacy) await this.resilient(step, "sourcing:variantes-lecture", () => enrichTopProfiles(env, id, 5));
-      else await enrichSteps(env, step, id, 6, "sourcing:variantes-lecture");
+      else await enrichSteps(env, step, id, 9, "sourcing:variantes-lecture");
       cards = await step.do("revue:cartes-variantes", () => sendReviewCards(env, id));
       if (cards === 0) {
         await step.do("revue:aucune", async () => {
@@ -297,7 +297,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         const pool = await step.do(`continu#${tick}:vivier`, () => poolStats(env, id));
         if (pool.active < cfg.poolTarget && pool.pending === 0) {
           await sourceRoundSteps(env, step, id, 3, `continu#${tick}`, 4);
-          await enrichSteps(env, step, id, 6, `continu#${tick}:lecture`);
+          await enrichSteps(env, step, id, 9, `continu#${tick}:lecture`);
           await step.do(`continu#${tick}:cartes`, () => sendReviewCards(env, id));
         }
       }
@@ -401,7 +401,7 @@ export class EvolutionWorkflow extends WorkflowEntrypoint<Env, EvolutionParams> 
       return true;
     });
     const found = await sourceRoundSteps(env, step, id, 1, "sourcing", 6);
-    await enrichSteps(env, step, id, 9, "lecture");
+    await enrichSteps(env, step, id, 12, "lecture");
     const cards = await step.do("cartes", async () => {
       await reevaluatePool(env, id);
       return sendReviewCards(env, id);

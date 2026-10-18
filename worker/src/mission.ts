@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, parseSender, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
 import { eliminationSummary, reevaluatePool } from "./pool";
+import { semanticCvtheque } from "./semantic";
 import { sendReviewCards } from "./review";
 import { addBusinessHours, frDate, nextSlot, type ScheduleConfig } from "./schedule";
 import { buildBooleanQueries, enrichFromPublicPages, plannedQueries, scoreAndStore, searchCvtheque, sourceOneQuery, sourceRound, type SourcedProfile, type SourcingRound } from "./sourcing";
@@ -138,8 +139,17 @@ export async function startMission(env: Env, id: string, now = new Date()): Prom
 export async function sourceFromCvtheque(env: Env, id: string): Promise<number> {
   const cfg = await getConfig(env);
   const f = readFiche((await getMission(env, id)).fiche);
-  const items = (await searchCvtheque(env, f)).map((x) => ({ candidateId: x.id, profile: x.profile }));
+  // Mots exacts (plein texte) + sens (empreintes vectorielles) : un profil n'est compté qu'une fois.
+  const byWords = (await searchCvtheque(env, f)).map((x) => ({ candidateId: x.id, profile: x.profile }));
+  let bySense: { candidateId: string; profile: SourcedProfile }[] = [];
+  try {
+    bySense = (await semanticCvtheque(env, f, 20)).map((x) => ({ candidateId: x.id, profile: x.profile }));
+  } catch (e) {
+    await journal(env, "sourcing", "recherche_semantique_indisponible", { erreur: (e as Error).message.slice(0, 200) }, { mission: id });
+  }
+  const items = [...byWords, ...bySense.filter((x) => !byWords.some((w) => w.candidateId === x.candidateId))];
   await scoreAndStore(env, id, f, items, cfg.matching.weights, cfg.matching.tjm_tolerance);
+  await journal(env, "sourcing", "cvtheque", { mots_exacts: byWords.length, par_le_sens: items.length - byWords.length }, { mission: id });
   return items.length;
 }
 
@@ -365,7 +375,10 @@ export async function sourceQueryAndScore(env: Env, id: string, round: SourcingR
   const m = await getMission(env, id);
   if (m.status !== "en_cours") return 0;
   const items = await sourceOneQuery(env, id, round, q);
-  await scoreAndStore(env, id, readFiche(m.fiche), items, cfg.matching.weights, cfg.matching.tjm_tolerance);
+  const scored = await scoreAndStore(env, id, readFiche(m.fiche), items, cfg.matching.weights, cfg.matching.tjm_tolerance);
+  // Précision de la requête (pertinents / trouvés) : mesure du cycle de recherche, suivie dans le tableau de bord.
+  const relevant = scored.filter((s) => !s.match.eliminated && s.match.score >= (cfg.mission.review_min_score ?? 30)).length;
+  await journal(env, "sourcing", "precision", { type: q.label, trouves: scored.length, pertinents: relevant, precision: scored.length ? Math.round((relevant / scored.length) * 100) : null }, { mission: id });
   return items.length;
 }
 
@@ -497,6 +510,8 @@ export async function sendShortlistValidation(env: Env, id: string, appIds: stri
       if (sheet) await sendDocument(env, b, sheet.bytes, sheet.filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", `n°${i + 1} · fiche candidat`, [[{ text: "📝 Compléter (compte rendu)", data: `cr:${appId}` }]]);
     }
   }
+  const table = await comparisonTable(env, appIds);
+  if (table) lines.push("", table);
   const vid = await createValidation(env, "shortlist", id, null, { apps: appIds });
   const deadline = m.deadline_at ? new Date(m.deadline_at) : null;
   const late = deadline && deadline.getTime() - Date.now() < 4 * 3_600_000;
@@ -516,6 +531,36 @@ export async function sendShortlistValidation(env: Env, id: string, appIds: stri
       .join("\n"),
     validationButtons(vid, { ok: "✅ Valider et envoyer", mod: "✏️ Modifier" }),
   );
+}
+
+/**
+ * Tableau comparatif de la shortlist : une ligne par critère, une colonne par candidat (classer les candidats
+ * entre eux réduit le bruit du jugement). Notes sur 5, « — » si l'information manque.
+ */
+export async function comparisonTable(env: Env, appIds: string[]): Promise<string> {
+  if (appIds.length < 2) return "";
+  const rows: { detail: Record<string, unknown>; answer: number | null; score: number | null; talent: Talent; profile: SourcedProfile }[] = [];
+  for (const a of appIds) {
+    const r = await env.DB.prepare("SELECT a.score_detail, a.answer_score, a.score, a.talent, c.profile FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?")
+      .bind(a)
+      .first<{ score_detail: string; answer_score: number | null; score: number | null; talent: string | null; profile: string }>();
+    if (!r) continue;
+    const profile = parseJson<SourcedProfile>(r.profile, { source: "inconnu" });
+    rows.push({ detail: parseJson(r.score_detail, {}), answer: r.answer_score, score: r.score, talent: talentView(profile, r.talent), profile });
+  }
+  const five = (v: unknown) => (typeof v === "number" ? `${Math.max(1, Math.round(v / 20))}/5` : "—");
+  const line = (label: string, f: (x: (typeof rows)[number]) => string) => `${label} : ${rows.map((x, i) => `n°${i + 1} ${f(x)}`).join(" · ")}`;
+  return [
+    "📊 Comparatif (critère par critère)",
+    line("Compétences obligatoires", (x) => (typeof x.detail.couverture_obligatoires === "number" ? `${x.detail.couverture_obligatoires} %` : "—")),
+    line("Compétences souhaitées", (x) => five(x.detail.competences_souhaitees)),
+    line("Séniorité", (x) => five(x.detail.seniorite)),
+    line("Secteur", (x) => five(x.detail.secteur)),
+    line("Réponses au questionnaire", (x) => (x.answer != null ? `${x.answer}/100` : "—")),
+    line("Stabilité", (x) => { const st = stabilityOf(x.profile); return st.bonus > 0 ? "stable" : st.bonus < 0 ? "mobile" : "—"; }),
+    line("Disponibilité", (x) => x.talent.disponible_le ?? x.talent.preavis ?? "—"),
+    line("Rémunération", (x) => (x.talent.remuneration_montant ? `${x.talent.remuneration_type === "tjm" ? "TJM " : ""}${x.talent.remuneration_montant} €` : "—")),
+  ].join("\n");
 }
 
 export async function markPresented(env: Env, id: string, appIds: string[]): Promise<void> {

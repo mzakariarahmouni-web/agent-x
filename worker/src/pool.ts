@@ -1,7 +1,7 @@
 import { getConfig, parseJson } from "./db";
 import type { Env } from "./env";
 import { readFiche } from "./fiche";
-import { evaluate, type SubScores } from "./matching";
+import { type Evidence, evaluate, evidenceOf, type SubScores } from "./matching";
 import type { SourcedProfile } from "./sourcing";
 
 /**
@@ -21,7 +21,7 @@ export async function reevaluatePool(env: Env, missionId: string): Promise<{ res
   const out = { restored: 0, eliminated: 0 };
   const stmts: D1PreparedStatement[] = [];
   for (const r of results ?? []) {
-    const subs = parseJson<Partial<SubScores>>(r.score_detail, {});
+    const subs = parseJson<Partial<SubScores> & Evidence>(r.score_detail, {});
     const match = evaluate(f, parseJson<SourcedProfile>(r.profile, { source: "inconnu" }), subs, cfg.matching.weights, cfg.matching.tjm_tolerance);
     const state = match.eliminated ? "ecarte" : "score";
     if (state === "score" && r.state === "ecarte") out.restored++;
@@ -30,7 +30,7 @@ export async function reevaluatePool(env: Env, missionId: string): Promise<{ res
       env.DB.prepare("UPDATE applications SET state = ?, score = ?, score_detail = ?, eliminated_reason = ? WHERE id = ?").bind(
         state,
         match.score,
-        JSON.stringify({ ...match.detail, couverture_obligatoires: match.mandatoryCoverage, a_verifier: match.toVerify }),
+        JSON.stringify({ ...match.detail, couverture_obligatoires: match.mandatoryCoverage, a_verifier: match.toVerify, ...evidenceOf(subs) }),
         match.reasons.join(" ; ") || null,
         r.id,
       ),

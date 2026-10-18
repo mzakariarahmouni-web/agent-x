@@ -2,8 +2,8 @@ import { ai } from "./ai/router";
 import { journal, parseJson } from "./db";
 import type { Env } from "./env";
 import { cleanTerm, experienceRange, type Fiche } from "./fiche";
-import { evaluate, isLanguage, type MatchResult, type Profile, type SubScores } from "./matching";
-import { recentNogo } from "./review";
+import { type Evidence, evaluate, evidenceOf, isLanguage, type MatchResult, type Profile, type SubScores } from "./matching";
+import { learningExamples } from "./review";
 import { isOptedOut } from "./rgpd";
 import { readPublicPages, type SearchHit, type SearchQuery, webSearch } from "./search";
 import { newId } from "./security";
@@ -79,7 +79,13 @@ export interface BooleanPlan {
  */
 export type SourcingRound = 1 | 2 | 3;
 
-export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number): SearchQuery[] {
+/** Pistes tirées des profils déjà retenus (cycle de recherche) : employeurs des « jumeaux », mots des bons profils. */
+export interface SearchHints {
+  employeurs?: string[];
+  mots?: string[];
+}
+
+export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number, hints: SearchHints = {}): SearchQuery[] {
   const titles = titlesOf(f);
   const must = mustSkills(f);
   // Sans lieu précisé, le marché par défaut est la France.
@@ -102,6 +108,12 @@ export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number)
     q.push({ label: "malt", domain: "malt.fr/profile", boolean: join(orGroup(titles.slice(0, 2)), ...must.slice(0, 2).map(quote)) });
     if (/dev|développeur|developer|engineer|ingénieur|data|devops|cloud|architecte/i.test(f.intitule)) q.push({ label: "github", domain: "github.com", boolean: join(...must.slice(0, 2).map(quote), loc || "France") });
   } else if (round === 3) {
+    // Technique des jumeaux : mêmes employeurs que les profils retenus et entreprises cibles du brief.
+    for (const co of uniq([...(hints.employeurs ?? []), ...(f.entreprises_cibles ?? [])]).slice(0, 4))
+      q.push({ label: `jumeaux ${co}`, domain: LI, boolean: join(orGroup(titles), quote(co), EXCLUSIONS) });
+    // Affinage : réinjecter les mots qu'écrivent réellement les bons profils.
+    const mots = uniq(hints.mots ?? []).filter((m) => !must.some((x) => x.toLowerCase() === m.toLowerCase())).slice(0, 3);
+    if (mots.length) q.push({ label: "affinage", domain: LI, boolean: join(orGroup(titles), orGroup(mots), locPart, EXCLUSIONS) });
     // Sourcing continu : rotation de variantes (un intitulé à la fois, synonymes, compétence par compétence, autres sites).
     const wide = uniq([...titles, ...f.synonymes.slice(0, 6).map(cleanTerm)]);
     for (const t of wide) q.push({ label: `variante ${t}`, domain: LI, boolean: join(quote(t), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
@@ -193,7 +205,7 @@ async function extractBatch(env: Env, hits: SearchHit[], missionId?: string): Pr
 }
 
 /** Sous-scores de l'IA (modèle économique) pour un lot de profils ; le code calcule ensuite le score final. */
-export async function subScores(env: Env, f: Fiche, profiles: Profile[], missionId?: string, learned = ""): Promise<Partial<SubScores>[]> {
+export async function subScores(env: Env, f: Fiche, profiles: Profile[], missionId?: string, learned = ""): Promise<(Partial<SubScores> & Evidence)[]> {
   if (!profiles.length) return [];
   const brief = {
     intitule: f.intitule,
@@ -208,16 +220,18 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
     family: "volume",
     label: "scoring",
     missionId,
-    system: `Tu notes l'adéquation de profils à une mission, de 0 à 100 par critère, sans complaisance.
-Une information absente du profil vaut 50 (inconnu), pas 0.
+    system: `Tu es un sourceur senior. Tu notes l'adéquation de profils à une mission, de 0 à 100 par critère, sans complaisance.
+Juge chaque critère indépendamment des autres, avant toute impression globale ; chaque note s'appuie sur un fait observable du profil (« preuves »), jamais sur une impression.
+Une information absente du profil vaut 50 (inconnu), pas 0. N'utilise jamais l'âge, le genre, l'origine, le nom, la photo ou la situation familiale.
+« vigilance » : le principal point à vérifier (une phrase courte) ; « ouverture » : un signal d'ouverture visible (profil Malt actif, fin de mission annoncée…) ou null.
 Un profil qui correspond à un des « profils_exclus » de la mission : toutes ses notes à 15 au plus.
 « seniorite » : 100 dans la fourchette « experience_cible », en baisse forte au-dessus (profil surdimensionné : poste de direction, expérience trop longue) comme en dessous.
-Réponds uniquement en JSON : { "scores": [{ "index": 0, "competences_souhaitees": 0, "seniorite": 0, "secteur": 0, "langues": 0, "soft_skills": 0 }] }`,
-    prompt: `Mission : ${JSON.stringify(brief)}${learned ? `\n\nProfils déjà écartés par le recruteur sur cette mission (note plus bas les profils semblables, pour le même motif) :\n${learned}` : ""}\n\nProfils :\n${profiles
+Réponds uniquement en JSON : { "scores": [{ "index": 0, "competences_souhaitees": 0, "seniorite": 0, "secteur": 0, "langues": 0, "soft_skills": 0, "preuves": { "competences_souhaitees": "", "seniorite": "", "secteur": "" }, "vigilance": "", "ouverture": null }] }`,
+    prompt: `Mission : ${JSON.stringify(brief)}${learned ? `\n\nDécisions du recruteur et du client sur cette mission (note plus haut les profils semblables aux retenus, plus bas ceux semblables aux écartés, pour le même motif) :\n${learned}` : ""}\n\nProfils :\n${profiles
       .map((p, i) => `[${i}] ${JSON.stringify({ intitule: p.intitule, competences: p.competences, annees_experience: p.annees_experience, secteurs: p.secteurs, langues: p.langues, resume: p.resume?.slice(0, 400) })}`)
       .join("\n")}`,
     json: true,
-    maxTokens: 2500,
+    maxTokens: 3000,
     validate: (d) => (Array.isArray(d?.scores) ? null : "liste « scores » absente"),
   });
   return profiles.map((_, i) => data.scores.find((s) => s.index === i) ?? {});
@@ -281,7 +295,7 @@ export async function scoreAndStore(
     });
   }
   // Apprentissage : les No go du recruteur (avec motif) orientent la notation des profils suivants.
-  const learned = items.length ? await recentNogo(env, missionId) : "";
+  const learned = items.length ? await learningExamples(env, missionId) : "";
   // Lots de 5 : requêtes courtes, compatibles avec les limites « par minute » des offres gratuites.
   for (let i = 0; i < items.length; i += 5) {
     const batch = items.slice(i, i + 5);
@@ -302,7 +316,7 @@ export async function scoreAndStore(
           b.candidateId,
           match.eliminated ? "ecarte" : "score",
           match.score,
-          JSON.stringify({ ...match.detail, couverture_obligatoires: match.mandatoryCoverage, a_verifier: match.toVerify }),
+          JSON.stringify({ ...match.detail, couverture_obligatoires: match.mandatoryCoverage, a_verifier: match.toVerify, ...evidenceOf(subs[j]) }),
           match.reasons.join(" ; ") || null,
         ),
       );
@@ -339,7 +353,27 @@ export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 
 export async function plannedQueries(env: Env, missionId: string, f: Fiche, round: SourcingRound, maxQueries: number): Promise<SearchQuery[]> {
   const { results: past } = await env.DB.prepare("SELECT detail FROM journal WHERE mission_id = ? AND action = 'recherche'").bind(missionId).all<{ detail: string | null }>();
   const used = new Set((past ?? []).map((r) => parseJson<{ requete?: string; site?: string }>(r.detail, {})).map((d) => `${d.site ?? ""}|${d.requete ?? ""}`));
-  return buildBooleanQueries(f, round, 50).filter((q) => !used.has(`${q.domain}|${q.boolean}`)).slice(0, maxQueries);
+  return buildBooleanQueries(f, round, 50, round === 3 ? await searchHints(env, missionId) : {}).filter((q) => !used.has(`${q.domain}|${q.boolean}`)).slice(0, maxQueries);
+}
+
+/** Employeurs et compétences les plus fréquents chez les profils retenus (Go et au-delà) ou les mieux notés. */
+export async function searchHints(env: Env, missionId: string): Promise<SearchHints> {
+  const { results } = await env.DB.prepare(
+    `SELECT c.profile FROM applications a JOIN candidates c ON c.id = a.candidate_id
+     WHERE a.mission_id = ? AND (a.state IN ('go','a_contacter','contacte','repondu','reponses_recues','qualifie','cv_formate','presente','place') OR (a.state = 'score' AND a.score >= 60))
+     ORDER BY (a.state <> 'score') DESC, a.score DESC LIMIT 12`,
+  )
+    .bind(missionId)
+    .all<{ profile: string }>();
+  const count = new Map<string, number>();
+  const employeurs: string[] = [];
+  for (const r of results ?? []) {
+    const p = parseJson<SourcedProfile>(r.profile, { source: "web" });
+    if (p.entreprise && !employeurs.includes(p.entreprise)) employeurs.push(p.entreprise);
+    for (const c of p.competences ?? []) count.set(c, (count.get(c) ?? 0) + 1);
+  }
+  const mots = [...count.entries()].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+  return { employeurs: employeurs.slice(0, 3), mots: mots.slice(0, 5) };
 }
 
 /**
