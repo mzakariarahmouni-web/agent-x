@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import { type Fiche, readFiche } from "./fiche";
 import { findMissingEmails } from "./hunter";
 import { reevaluatePool } from "./pool";
+import { stabilityOf } from "./talent";
 import { displayLocation, hasSkill, isLanguage, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
@@ -56,6 +57,7 @@ export function cardText(f: Fiche, r: CardRow, rank: number, total: number): str
     where,
     `📍 ${lieu}`,
     strengths.length ? `✅ ${strengths.slice(0, 2).join(" · ")}` : "",
+    stabilityOf(p).label ? `🏢 ${stabilityOf(p).label}` : "",
     detail.a_verifier?.length ? `⚠️ ${detail.a_verifier.join(" ; ")}` : "",
     `📍 Source : ${link ? new URL(link).hostname.replace(/^www\./, "") : r.source} · ✉️ email : ${r.email ? "oui" : "non"}`,
     link ?? "",

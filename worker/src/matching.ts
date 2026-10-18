@@ -1,4 +1,5 @@
 import type { Fiche } from "./fiche";
+import { stabilityOf } from "./talent";
 
 /**
  * Matrice de matching : critères éliminatoires vérifiés par le code (jamais par l'IA seule),
@@ -22,6 +23,11 @@ export interface Profile {
   resume?: string;
   /** Page d'origine (le sous-domaine LinkedIn indique le pays : in.linkedin.com = Inde). */
   source_url?: string;
+  /** Fiche candidat, niveau 1 (profil public). */
+  en_poste?: boolean | null;
+  anciennete_entreprise_annees?: number | null;
+  experiences?: { poste?: string | null; entreprise?: string | null; debut?: string | null; fin?: string | null }[];
+  diplome?: string | null;
 }
 
 /** Statut contractuel reconnu, sinon null (un intitulé de poste comme « Senior » n'est pas un statut). */
@@ -173,8 +179,10 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   };
   const totalW = Object.values(weights).reduce((a, b) => a + b, 0) || 1;
   const weighted = Object.entries(weights).reduce((acc, [k, w]) => acc + (detail[k] ?? 50) * w, 0) / totalW;
-  // La couverture des obligatoires pèse sur tout le score (0,6 à 1).
-  const score = Math.round(weighted * (0.6 + 0.4 * coverage));
+  // La couverture des obligatoires pèse sur tout le score (0,6 à 1) ; la stabilité ajuste (règle de recrutement).
+  const stab = stabilityOf(p);
+  detail.stabilite = stab.bonus;
+  const score = Math.max(0, Math.min(100, Math.round(weighted * (0.6 + 0.4 * coverage)) + stab.bonus));
   return { eliminated: reasons.length > 0, reasons, toVerify, mandatoryCoverage: Math.round(coverage * 100), score, detail };
 }
 

@@ -1,5 +1,7 @@
 import type { ChatFile } from "./ai/providers";
-import { generateCv } from "./cv";
+import { anonymizeDeep, generateCv, initials } from "./cv";
+import { buildDocx } from "./docx";
+import { mergeTalent, missingAt, stabilityOf, type Talent, talentBlocks, talentFromInterview, talentText, talentView } from "./talent";
 import { getConfig, getSetting, journal, nowIso, parseJson, setSetting } from "./db";
 import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, parseSender, readFiche } from "./fiche";
@@ -279,7 +281,13 @@ export async function qualifyPending(env: Env, id: string): Promise<{ qualified:
     if (q.decision === "qualifie") {
       qualified++;
       await env.DB.prepare("UPDATE candidates SET qualified_at = datetime('now'), consent_at = CASE WHEN ? THEN datetime('now') ELSE consent_at END WHERE id = ?").bind(q.consent ? 1 : 0, r.candidate_id).run();
-      const rows: Button[][] = q.phoneSuggested ? [[{ text: "📞 Préparer l'appel", data: `call:${r.id}` }]] : [];
+      const rows: Button[][] = [
+        [{ text: "📞 Préparer l'appel", data: `call:${r.id}` }],
+        [
+          { text: "📝 Compte rendu d'entretien", data: `cr:${r.id}` },
+          { text: "🗂 Fiche candidat", data: `fc:${r.id}` },
+        ],
+      ];
       await notify(env, `✅ Qualifié · ${who}\nScore ${q.finalScore}/100 (réponses ${q.answerScore})\n${notation.synthese}${q.phoneSuggested ? "\n\n📞 Un appel de 15 min est conseillé (score limite ou posture client à vérifier)." : ""}`, rows);
     } else {
       proposedRejections++;
@@ -412,6 +420,9 @@ export async function sendShortlistValidation(env: Env, id: string, appIds: stri
           `n°${i + 1} · adéquation au descriptif : ${meta?.coverage ?? "?"} %${meta?.missing?.length ? `\nMots-clés sans preuve (non ajoutés) : ${meta.missing.slice(0, 8).join(", ")}` : ""}`,
         );
       }
+      // Dossier de compétences = CV formaté + fiche candidat.
+      const sheet = await talentDocx(env, appId);
+      if (sheet) await sendDocument(env, b, sheet.bytes, sheet.filename, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", `n°${i + 1} · fiche candidat`, [[{ text: "📝 Compléter (compte rendu)", data: `cr:${appId}` }]]);
     }
   }
   const vid = await createValidation(env, "shortlist", id, null, { apps: appIds });
@@ -451,6 +462,57 @@ export async function markPresented(env: Env, id: string, appIds: string[]): Pro
       ],
     ]);
   }
+}
+
+interface TalentRow {
+  mission_id: string;
+  talent: string | null;
+  profile: string;
+  full_name: string | null;
+  fiche: string;
+}
+
+async function talentRow(env: Env, appId: string): Promise<TalentRow | null> {
+  return env.DB.prepare("SELECT a.mission_id, a.talent, c.profile, c.full_name, m.fiche FROM applications a JOIN candidates c ON c.id = a.candidate_id JOIN missions m ON m.id = a.mission_id WHERE a.id = ?")
+    .bind(appId)
+    .first<TalentRow>();
+}
+
+/** Fiche candidat lisible sur Telegram (nom complet : usage interne du recruteur). */
+export async function talentSheetText(env: Env, appId: string): Promise<string> {
+  const r = await talentRow(env, appId);
+  if (!r) return "Candidat introuvable.";
+  const p = parseJson<SourcedProfile>(r.profile, { source: "inconnu" });
+  return talentText(talentView(p, r.talent), r.full_name ?? "Candidat", readFiche(r.fiche).intitule, stabilityOf(p).label);
+}
+
+/** Niveau 3 : compte rendu d'entretien (texte ou vocal transcrit) structuré par l'IA et ajouté à la fiche. */
+export async function applyInterviewNotes(env: Env, appId: string, notes: string): Promise<string> {
+  const r = await talentRow(env, appId);
+  if (!r) return "Candidat introuvable.";
+  const p = parseJson<SourcedProfile>(r.profile, { source: "inconnu" });
+  const current = talentView(p, r.talent);
+  const fromInterview = await talentFromInterview(env, readFiche(r.fiche), current, notes, r.mission_id);
+  const stored = mergeTalent(parseJson<Talent>(r.talent, {}), fromInterview);
+  await env.DB.prepare("UPDATE applications SET talent = ?, updated_at = datetime('now') WHERE id = ?").bind(JSON.stringify(stored), appId).run();
+  await journal(env, "recruteur", "compte_rendu_entretien", { caracteres: notes.length }, { mission: r.mission_id });
+  const full = mergeTalent(current, fromInterview);
+  const missing = [...missingAt(full, 2), ...missingAt(full, 3)];
+  return `${talentText(full, r.full_name ?? "Candidat", readFiche(r.fiche).intitule, stabilityOf(p).label)}${missing.length ? `\n\n⏳ Encore à compléter : ${missing.join(", ")}. Touche « 📝 Compte rendu » pour ajouter des précisions.` : "\n\n✅ Fiche complète, prête pour la présentation au client."}`;
+}
+
+/** Niveau 4 : fiche candidat .docx (anonymisée, initiales) jointe au CV formaté. */
+export async function talentDocx(env: Env, appId: string): Promise<{ bytes: Uint8Array; filename: string } | null> {
+  const r = await talentRow(env, appId);
+  if (!r) return null;
+  const p = parseJson<SourcedProfile>(r.profile, { source: "inconnu" });
+  const f = readFiche(r.fiche);
+  const who = initials(r.full_name ?? p.nom);
+  const t = anonymizeDeep(talentView(p, r.talent), r.full_name ?? p.nom);
+  const brand = parseJson<{ font?: string; color?: string }>(await getSetting(env, "cv_brand"), {});
+  const bytes = buildDocx(talentBlocks(t, who, f, stabilityOf(p).label), { font: brand.font || "Calibri", color: (brand.color || "1F3864").replace("#", "") }, `Fiche candidat — ${who}`);
+  const safe = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w-]+/g, "_").slice(0, 40);
+  return { bytes, filename: `Fiche_candidat_${safe(who.replace(/\./g, ""))}_${safe(f.intitule)}.docx` };
 }
 
 /** Fichier joint à une mission (fiche PDF ou capture envoyée au bot). */

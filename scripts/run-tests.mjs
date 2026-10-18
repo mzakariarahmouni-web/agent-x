@@ -30,7 +30,7 @@ await build({
 });
 const X = await import(out);
 const SCHEMA = readFileSync("migrations/0001_init.sql", "utf8");
-const SCHEMA2 = readFileSync("migrations/0002_revue.sql", "utf8");
+const SCHEMA2 = readFileSync("migrations/0002_revue.sql", "utf8") + "\n" + readFileSync("migrations/0003_talent.sql", "utf8");
 
 // ───────────── Outils de test ─────────────
 let failed = 0;
@@ -152,6 +152,17 @@ function respond(system, prompt) {
     return /Modification demandée/.test(prompt)
       ? { objet: "Mission AMOA, télétravail", modele: "Bonjour {prenom},\n{accroche}\nMission AMOA banque à Paris, 12 mois, télétravail 3 jours. Seriez-vous disponible pour en parler cette semaine ?" }
       : { objet: "Mission AMOA banque", modele: "Bonjour {prenom},\n{accroche}\nJe recrute un chef de projet AMOA pour une banque à Paris (12 mois). Seriez-vous disponible pour en parler cette semaine ?" };
+  if (/questions de précision utiles/.test(system)) return { questions: ["Pouvez-vous préciser la durée exacte de votre préavis ?", "Quel volume de flux EDIFACT gériez-vous ?"] };
+  if (/compte rendu d'entretien d'un recruteur/.test(system))
+    return {
+      notes_situation: "En poste, écoute le marché ; un autre processus en cours.",
+      points_forts: ["Maîtrise EDIFACT", "Relation client", "Autonomie"],
+      experience_resume: "Neuf ans en intégration EDI dans la distribution, dont quatre comme référente technique.",
+      personnalite: "Calme, structurée, pédagogue.",
+      package: "13e mois, 10 % de variable",
+      remuneration_type: null,
+      remuneration_montant: null,
+    };
   if (/Tu écris UNE phrase/.test(system)) return { accroche: "Votre parcours en AMOA bancaire et en recette SAP correspond exactement à cette mission." };
   if (/fiche modèle structurée/.test(system)) return FICHE;
   if (/questionnaires de pré-qualification/.test(system))
@@ -173,7 +184,7 @@ function respond(system, prompt) {
           index: Number(m[1]),
           nom: m[2].split(" - ")[0],
           intitule: "Chef de projet AMOA",
-          entreprise: "Banque Exemple SA",
+          entreprise: "Finance Conseil SA",
           localisation: "Paris",
           competences: ["AMOA", "recette", "SAP", "Jira"],
           annees_experience: 8,
@@ -353,7 +364,7 @@ async function makeEnv() {
   const DB = new FakeD1();
   for (const s of X.migrate.splitSql(SCHEMA)) DB.db.exec(s);
   for (const s of X.migrate.splitSql(SCHEMA2)) DB.db.exec(s);
-  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '2')");
+  DB.db.exec("INSERT INTO settings (key, value) VALUES ('schema_version', '3')");
   const env = {
     DB,
     FILES: new FakeKV(),
@@ -850,7 +861,7 @@ await test("revue : une carte par profil (score, points forts, source, email), r
   const cards = tgSent.filter((m) => m.body.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data?.startsWith("rv:"));
   assert(cards.length === 2, `${cards.length} cartes Telegram`);
   const martin = cards.find((c) => /Brigitte Martin/.test(c.body.text));
-  assert(/\/100/.test(martin.body.text) && /email : oui/.test(martin.body.text) && /linkedin\.com/.test(martin.body.text) && /chez Banque Exemple SA/.test(martin.body.text), martin.body.text);
+  assert(/\/100/.test(martin.body.text) && /email : oui/.test(martin.body.text) && /linkedin\.com/.test(martin.body.text) && /chez Finance Conseil SA/.test(martin.body.text), martin.body.text);
   assert(martin.body.reply_markup.inline_keyboard[1].map((b) => b.text).join() === "❌ Niveau,❌ Budget,❌ Déjà connu,❌ Autre", "motifs");
   for (const c of cards) rvApps[/Martin/.test(c.body.text) ? "martin" : "jean"] = c.body.reply_markup.inline_keyboard[0][0].callback_data.split(":")[1];
   const states = (await rv.DB.prepare("SELECT state FROM applications WHERE mission_id = ?").bind(rvMission).all()).results.map((r) => r.state);
@@ -921,7 +932,7 @@ await test("Hunter : email trouvé pour un Go sans adresse, puis contact planifi
   await rv.DB.prepare("UPDATE applications SET state = 'nogo' WHERE id = ?").bind(rvApps.martin).run();
   calls.length = 0;
   const out = await X.review.applyMessage(rv, rvMission, rvModel, "auto");
-  assert(calls.includes("hunter") && lastHunter.company === "Banque Exemple SA" && lastHunter.full_name === "Jean Dupont", JSON.stringify(lastHunter));
+  assert(calls.includes("hunter") && lastHunter.company === "Finance Conseil SA" && lastHunter.full_name === "Jean Dupont", JSON.stringify(lastHunter));
   assert(out.planned === 1 && out.email === 1, JSON.stringify(out));
   const a = await rv.DB.prepare("SELECT a.state, a.channel, c.email FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?").bind(rvApps.jean).first();
   assert(a.state === "a_contacter" && a.channel === "email" && a.email === "jean.dupont@banque-exemple.fr", JSON.stringify(a));
@@ -1111,6 +1122,74 @@ await test("fiche de poste : rubriques toujours affichées (rémunération, lieu
   assert(f.questions_clarification.some((q) => /TJM ou le salaire/.test(q)) && f.questions_clarification.some((q) => /Où se situe/.test(q)), f.questions_clarification.join(" | "));
   const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, questions_clarification: [] });
   assert(X.fiche.remuneration(g) === "salaire 50000 à 60000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
+});
+
+await test("fiche candidat niveau 1 : en poste, dernier poste, ancienneté et stabilité lus dans le profil public", () => {
+  const T = X.talent;
+  const p = {
+    intitule: "Consultante EDI",
+    annees_experience: 9,
+    experiences: [
+      { poste: "Consultante EDI", entreprise: "Generix", debut: "2021-03", fin: null },
+      { poste: "Analyste EDI", entreprise: "Carrefour", debut: "2016-01", fin: "2021-02" },
+    ],
+  };
+  const t = T.talentFromProfile(p);
+  assert(t.en_poste === "oui" && t.dernier_poste === "Consultante EDI" && t.derniere_entreprise === "Generix", JSON.stringify(t));
+  const st = T.stabilityOf(p, new Date("2026-10-18T00:00:00Z"));
+  assert(st.current >= 5 && st.bonus > 0 && /stable/.test(st.label), JSON.stringify(st));
+  const hopper = T.stabilityOf({ intitule: "Consultant", experiences: [{ entreprise: "A", debut: "2024-01", fin: "2024-09" }, { entreprise: "B", debut: "2024-10", fin: "2025-06" }, { entreprise: "C", debut: "2025-07", fin: "2026-02" }, { entreprise: "D", debut: "2026-03", fin: null }] }, new Date("2026-10-18T00:00:00Z"));
+  assert(hopper.bonus < 0 && /changements fréquents/.test(hopper.label), JSON.stringify(hopper));
+  const free = T.stabilityOf({ intitule: "Consultant freelance", experiences: hopperExps() }, new Date("2026-10-18T00:00:00Z"));
+  assert(free.bonus >= 0, "un freelance n'est pas pénalisé sur la durée de ses missions");
+  function hopperExps() { return [{ entreprise: "A", debut: "2024-01", fin: "2024-09" }, { entreprise: "B", debut: "2024-10", fin: "2025-06" }, { entreprise: "C", debut: "2025-07", fin: null }]; }
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  const base = X.matching.evaluate(edi(), { intitule: "Consultante EDI", competences: ["EDIFACT", "Linux", "Shell"] }, {}, w).score;
+  const stable = X.matching.evaluate(edi(), { ...p, competences: ["EDIFACT", "Linux", "Shell"] }, {}, w).score;
+  assert(stable > base, `${stable} > ${base}`);
+});
+
+await test("fiche candidat niveau 2 : formulaire « Votre situation » (rémunération, préavis, disponibilité, diplôme, compétences) puis questions de précision de l'IA", async () => {
+  const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_t', 'Consultant EDI', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...edi(), questionnaire: [{ id: "b2_1", bloc: 2, texte: "Décrivez un projet EDI.", type: "texte" }] })).run();
+  await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES ('c_t', 'Léa Roux', 'linkedin.com', ?, '')").bind(JSON.stringify({ intitule: "Consultante EDI", entreprise: "Generix", competences: ["EDIFACT", "AS2"] })).run();
+  await e.DB.prepare("INSERT INTO applications (id, mission_id, candidate_id, state, token) VALUES ('a_t', 'm_t', 'c_t', 'contacte', 't_talenttest123')").run();
+  const html = await (await X.pages.questionnairePage(e, "t_talenttest123")).text();
+  for (const n of ["t_en_poste", "t_rem_type", "t_rem_montant", "t_preavis", "t_dispo", "t_diplome", "t_competences"]) assert(html.includes(`name="${n}"`), n);
+  assert(html.includes('value="Consultante EDI chez Generix"') && html.includes("EDIFACT, AS2"), "préremplissage depuis le sourcing");
+  const fd = new FormData();
+  for (const [k, v] of Object.entries({ q_b2_1: "Migration de 300 partenaires EDIFACT.", t_en_poste: "oui", t_poste: "Consultante EDI chez Generix", t_rem_type: "salaire", t_rem_montant: "52 000", t_package: "13e mois", t_preavis: "3 mois", t_dispo: "2027-01-15", t_diplome: "Master MIAGE", t_competences: "EDIFACT, AS2, XSLT" })) fd.set(k, v);
+  const res = await X.pages.questionnaireSubmit(e, "t_talenttest123", new Request("https://x", { method: "POST", body: fd }));
+  assert((await res.text()).includes("/q/t_talenttest123/suite"), "lien vers les questions de précision");
+  const t = JSON.parse(await e.DB.prepare("SELECT talent FROM applications WHERE id = 'a_t'").first("talent"));
+  assert(t.remuneration_type === "salaire" && t.remuneration_montant === 52000 && t.preavis === "Préavis de 3 mois" && t.disponible_le === "2027-01-15" && t.competences.length === 3, JSON.stringify(t));
+  assert(X.talent.annualPay(t) === "52 000 € brut / an", X.talent.annualPay(t));
+  const page1 = await (await X.pages.followUpPage(e, "t_talenttest123", new Request("https://x/q/t_talenttest123/suite"))).text();
+  assert(page1.includes("durée exacte de votre préavis") && page1.includes('name="p_1"'), "questions de l'IA");
+  const fd2 = new FormData();
+  fd2.set("p_0", "Préavis négociable à 2 mois.");
+  await X.pages.followUpPage(e, "t_talenttest123", new Request("https://x/q/t_talenttest123/suite", { method: "POST", body: fd2 }));
+  const t2 = JSON.parse(await e.DB.prepare("SELECT talent FROM applications WHERE id = 'a_t'").first("talent"));
+  assert(/négociable à 2 mois/.test(t2.precisions) && t2.remuneration_montant === 52000, JSON.stringify(t2));
+});
+
+await test("fiche candidat niveaux 3 et 4 : compte rendu Telegram structuré par l'IA, puis fiche .docx anonymisée jointe au CV", async () => {
+  const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_c', 'Consultant EDI', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...edi(), localisation: "Paris", questionnaire: [] })).run();
+  await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES ('c_c', 'Léa Roux', 'linkedin.com', ?, '')").bind(JSON.stringify({ intitule: "Consultante EDI", entreprise: "Generix", annees_experience: 9, competences: ["EDIFACT"] })).run();
+  await e.DB.prepare("INSERT INTO applications (id, mission_id, candidate_id, state, talent) VALUES ('a_c', 'm_c', 'c_c', 'qualifie', ?)").bind(JSON.stringify({ remuneration_type: "salaire", remuneration_montant: 52000, preavis: "Préavis de 3 mois", disponible_le: "2027-01-15", diplome: "Master MIAGE" })).run();
+  const secret = await X.security.derivedSecret(e.ADMIN_TOKEN, "telegram");
+  const post = (u) => X.worker.fetch(new Request("https://x/telegram/webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(u) }), e, { waitUntil() {} });
+  tgSent.length = 0;
+  await post({ callback_query: { id: "c1", data: "cr:a_c", message: { message_id: 1, chat: { id: 42 } } } });
+  await post({ message: { message_id: 2, chat: { id: 42 }, text: "Léa est en poste chez Generix, écoute le marché. Très à l'aise en EDIFACT, calme et pédagogue. 13e mois et 10 % de variable." } });
+  const t = JSON.parse(await e.DB.prepare("SELECT talent FROM applications WHERE id = 'a_c'").first("talent"));
+  assert(t.experience_resume && t.points_forts.length === 3 && t.personnalite && t.package && t.remuneration_montant === 52000, JSON.stringify(t));
+  const reply = tgSent.map((m) => m.body.text ?? "").find((x) => /Fiche candidat/.test(x));
+  assert(reply && /1\. Sourcing/.test(reply) && /2\. Pré-qualification/.test(reply) && /3\. Entretien/.test(reply) && /52 000 € brut \/ an/.test(reply), reply);
+  const doc = await X.mission.talentDocx(e, "a_c");
+  const txt = new TextDecoder().decode(doc.bytes);
+  assert(/^Fiche_candidat_L_R_/.test(doc.filename) && txt.includes("Fiche candidat — L. R.") && txt.includes("Préavis de 3 mois") && !/Roux|Léa/.test(txt), doc.filename);
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

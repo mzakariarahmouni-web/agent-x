@@ -139,7 +139,8 @@ export async function searchCvtheque(env: Env, f: Fiche, limit = 30): Promise<{ 
 const EXTRACT_SYSTEM = `Tu extrais des profils de personnes à partir de résultats de recherche web publics.
 Ignore les offres d'emploi, les entreprises, les articles et les pages qui ne décrivent pas une personne précise.
 N'invente aucune information : un champ inconnu vaut null ou [].
-Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "" }] }
+Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "", "en_poste": null, "anciennete_entreprise_annees": null, "diplome": null }] }
+« en_poste » : true si l'extrait montre un poste actuel (« depuis », « présent », « actuellement »), false s'il dit le contraire, sinon null ; « anciennete_entreprise_annees » : années dans l'entreprise actuelle si l'extrait le dit.
 « statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null (jamais un niveau ou un intitulé).`;
 
 export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: string): Promise<SourcedProfile[]> {
@@ -311,7 +312,9 @@ export async function sourcePublic(env: Env, missionId: string, f: Fiche, maxQue
 const PAGE_SYSTEM = `Tu lis la page publique d'un professionnel (profil LinkedIn public, Malt ou GitHub) et tu en extrais un profil fidèle.
 N'invente rien ; un champ absent vaut null ou [].
 « resume » : 3 à 6 lignes factuelles sur les expériences (postes, secteurs, durées, réalisations chiffrées s'il y en a).
-Réponds uniquement en JSON : { "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "" }
+« experiences » : les postes de la page, du plus récent au plus ancien, avec les dates telles qu'écrites converties en AAAA-MM (fin null si en cours).
+« en_poste » : true si un poste est en cours ; « anciennete_entreprise_annees » : années dans l'entreprise actuelle ; « diplome » : plus haut diplôme et école si indiqués.
+Réponds uniquement en JSON : { "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "resume": "", "experiences": [{ "poste": "", "entreprise": "", "debut": "AAAA-MM", "fin": null }], "en_poste": null, "anciennete_entreprise_annees": null, "diplome": null }
 « statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null.`;
 
 /**

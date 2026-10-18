@@ -1,6 +1,6 @@
 import { configPage, handleAdmin } from "./admin";
 import { handleTelegram } from "./bot";
-import { questionnairePage, questionnaireSubmit, stopPage } from "./candidate-pages";
+import { followUpPage, questionnairePage, questionnaireSubmit, stopPage } from "./candidate-pages";
 import { runCron } from "./cron";
 import type { Env } from "./env";
 import { handleLinkedin } from "./linkedin-api";
@@ -21,6 +21,8 @@ export default {
       if (path === "/telegram/webhook" && req.method === "POST") return handleTelegram(env, req, ctx);
       if (path.startsWith("/api/admin/") || path.startsWith("/oauth/")) return handleAdmin(env, req, path);
       if (path.startsWith("/api/linkedin/")) return handleLinkedin(env, req, path);
+      const fu = /^\/q\/([\w-]+)\/suite$/.exec(path);
+      if (fu) return followUpPage(env, fu[1], req);
       const q = /^\/q\/([\w-]+)$/.exec(path);
       if (q) return req.method === "POST" ? questionnaireSubmit(env, q[1], req) : questionnairePage(env, q[1]);
       const stop = /^\/stop\/([\w-]+)$/.exec(path);

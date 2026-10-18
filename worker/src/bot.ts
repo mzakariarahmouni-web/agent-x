@@ -1,7 +1,8 @@
 import { deleteSetting, getSetting, journal, nowIso, parseJson, setSetting } from "./db";
 import type { Env } from "./env";
 import { readFiche } from "./fiche";
-import { getMission, storeBriefFile } from "./mission";
+import { applyInterviewNotes, getMission, storeBriefFile, talentSheetText } from "./mission";
+import { missingAt, talentView, transcribe } from "./talent";
 import { eraseCandidate, findCandidate } from "./rgpd";
 import { derivedSecret, newId, safeEqual } from "./security";
 import { usageToday } from "./usage";
@@ -19,6 +20,8 @@ interface TgMessage {
   caption?: string;
   document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
   photo?: { file_id: string; file_size?: number }[];
+  voice?: { file_id: string; duration?: number; file_size?: number };
+  audio?: { file_id: string; duration?: number; file_size?: number };
 }
 
 interface TgUpdate {
@@ -29,9 +32,11 @@ interface TgUpdate {
 const AWAIT_KEY = "telegram_awaiting";
 
 interface Awaiting {
-  kind: "v1" | "v3" | "vmsg" | "evolution";
+  kind: "v1" | "v3" | "vmsg" | "evolution" | "cr";
   missionId: string;
   validationId?: string;
+  /** Compte rendu d'entretien : candidature concernée. */
+  appId?: string;
 }
 
 export async function sendMissionEvent(env: Env, missionId: string, type: string, payload: MissionEvent): Promise<void> {
@@ -128,9 +133,27 @@ async function handleText(env: Env, b: Bot, msg: TgMessage, ctx: ExecutionContex
   }
   if (/^\//.test(text)) return void (await send(env, b, "Commande inconnue. /aide pour la liste."));
 
-  // Réponse attendue (modification d'une validation, évolution de mission).
+  // Réponse attendue (modification d'une validation, évolution de mission, compte rendu d'entretien).
   const awaiting = parseJson<Awaiting | null>(await getSetting(env, AWAIT_KEY), null);
-  if (awaiting && text) {
+  if (awaiting?.kind === "cr" && awaiting.appId) {
+    const audio = msg.voice ?? msg.audio;
+    let notes = text;
+    if (audio) {
+      if ((audio.file_size ?? 0) > 20_000_000) return void (await send(env, b, "Vocal trop long : découpe-le ou écris le compte rendu."));
+      await send(env, b, "🎙 Vocal reçu, je le transcris…");
+      try {
+        notes = await transcribe(env, await downloadFile(env, b.token, audio.file_id));
+      } catch (e) {
+        return void (await send(env, b, `Transcription impossible (${(e as Error).message.slice(0, 120)}). Écris le compte rendu en texte, s'il te plaît.`));
+      }
+    }
+    if (notes) {
+      await deleteSetting(env, AWAIT_KEY);
+      await send(env, b, "📝 Compte rendu reçu, je complète la fiche candidat…");
+      return void (await send(env, b, await applyInterviewNotes(env, awaiting.appId, notes)));
+    }
+  }
+  if (awaiting && awaiting.kind !== "cr" && text) {
     await deleteSetting(env, AWAIT_KEY);
     if (awaiting.kind === "evolution") {
       await sendMissionEvent(env, awaiting.missionId, "point", { kind: "evolution", text });
@@ -223,6 +246,21 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
     await reply("Revue terminée");
     return endReview(env, b, id);
   }
+  if (kind === "cr") {
+    const m = await env.DB.prepare("SELECT a.mission_id, c.full_name FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?").bind(id).first<{ mission_id: string; full_name: string | null }>();
+    if (!m) return reply("Introuvable.");
+    await setSetting(env, AWAIT_KEY, JSON.stringify({ kind: "cr", missionId: m.mission_id, appId: id } satisfies Awaiting));
+    await reply("Compte rendu");
+    return void (await send(
+      env,
+      b,
+      `📝 Compte rendu d'entretien · ${m.full_name ?? "candidat"}\nÉcris-le ou envoie un message vocal : situation, rémunération et package, préavis, disponibilité, diplôme, points forts, expérience, personnalité… Je range tout dans la fiche candidat.`,
+    ));
+  }
+  if (kind === "fc") {
+    await reply("Fiche candidat");
+    return void (await send(env, b, await talentSheetText(env, id), [[{ text: "📝 Compléter (compte rendu)", data: `cr:${id}` }]]));
+  }
   if (kind === "ev") {
     await setSetting(env, AWAIT_KEY, JSON.stringify({ kind: "evolution", missionId: id } satisfies Awaiting));
     await reply("Écris l'évolution.");
@@ -251,9 +289,9 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
     return listLinkedin(env, b);
   }
   if (kind === "call") {
-    const r = await env.DB.prepare("SELECT a.synthesis, a.mission_id, c.full_name, c.email FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?")
+    const r = await env.DB.prepare("SELECT a.synthesis, a.mission_id, a.talent, c.full_name, c.email, c.profile FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.id = ?")
       .bind(id)
-      .first<{ synthesis: string | null; mission_id: string; full_name: string | null; email: string | null }>();
+      .first<{ synthesis: string | null; mission_id: string; talent: string | null; full_name: string | null; email: string | null; profile: string }>();
     if (!r) return reply("Introuvable.");
     const syn = parseJson<{ doutes?: string[]; points_forts?: string[] }>(r.synthesis, {});
     const f = readFiche((await getMission(env, r.mission_id)).fiche);
@@ -261,7 +299,11 @@ async function handleCallback(env: Env, b: Bot, cb: NonNullable<TgUpdate["callba
     return void (await send(
       env,
       b,
-      `📞 Appel de qualification · ${r.full_name ?? "?"}${r.email ? ` (${r.email})` : ""}\nMission : ${f.intitule}\n\nÀ creuser :\n${(syn.doutes ?? []).map((d) => `• ${d}`).join("\n") || "• Posture client, communication"}\n\nPoints forts à confirmer :\n${(syn.points_forts ?? []).map((d) => `• ${d}`).join("\n") || "—"}\n\nÀ la fin : TJM confirmé, date de démarrage, accord de présentation.`,
+      `📞 Appel de qualification · ${r.full_name ?? "?"}${r.email ? ` (${r.email})` : ""}\nMission : ${f.intitule}\n\nÀ creuser :\n${(syn.doutes ?? []).map((d) => `• ${d}`).join("\n") || "• Posture client, communication"}\n\nPoints forts à confirmer :\n${(syn.points_forts ?? []).map((d) => `• ${d}`).join("\n") || "—"}\n\nFiche candidat, encore à recueillir : ${(() => {
+        const t = talentView(parseJson(r.profile, {}), r.talent);
+        return [...missingAt(t, 2), ...missingAt(t, 3)].join(", ") || "rien, la fiche est complète";
+      })()}\n\nÀ la fin : rémunération confirmée, date de démarrage, accord de présentation. Puis « 📝 Compte rendu » (texte ou vocal).`,
+      [[{ text: "📝 Compte rendu d'entretien", data: `cr:${id}` }]],
     ));
   }
   await reply("Action inconnue.");

@@ -16,6 +16,11 @@
   .muted { color: var(--muted); font-size: .92rem; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin:14px 0; }
   .q { font-weight:600; margin-bottom:10px; }
+  h2 { font-size: 1.1rem; margin: 26px 0 4px; }
+  .row { display:flex; gap:10px; margin-bottom:10px; }
+  .row > * { flex:1; }
+  select, input[type=date] { width:100%; border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; color:inherit; background:transparent; }
+  .card input[type=text] + input, .card select + input { margin-top: 10px; }
   textarea, input[type=text] { width:100%; border:1px solid var(--line); border-radius:8px; padding:10px; font:inherit; color:inherit; background:transparent; }
   textarea { min-height: 110px; resize: vertical; }
   .yn { display:flex; gap:10px; }

@@ -15,7 +15,7 @@ Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (G
 | Message | Modèle de premier contact personnalisé par profil, montré sur 2 exemples ; email professionnel cherché avec Hunter pour les Go sans adresse | Valider, modifier, et choisir le canal : auto, tout email ou tout LinkedIn |
 | F4 Contact | Email automatique depuis Gmail ou Outlook ; LinkedIn pré-rempli par l'extension Edge (profil, lien et message ; un clic « Envoyer ») ; 3 relances aux créneaux ouvrés, dans le ton du message validé. Le sourcing continue en parallèle (nouvelles requêtes toutes les 6 h tant que le vivier est sous la cible) | — |
 | F5 Qualification | Questionnaire court noté sur une grille commune ; rejet proposé, jamais automatique | n°2 : rejet définitif |
-| F6 CV | Dossier de compétences anonymisé, .docx compatible ATS, adéquation au descriptif mesurée, aucune compétence inventée | n°3 et 4 : shortlist et envoi |
+| F6 Dossier | Dossier de compétences anonymisé = CV .docx compatible ATS (adéquation mesurée, aucune compétence inventée) + fiche candidat .docx | n°3 et 4 : shortlist et envoi |
 | F7 Suivi | Décision du client (placé, non retenu) en un clic | — |
 
 ## Installation (environ 20 minutes, une seule fois)
@@ -41,6 +41,8 @@ Ouvrez `https://agent-x.<votre-sous-domaine>.workers.dev/config`, entrez votre `
 | Gemini | Oui | [aistudio.google.com](https://aistudio.google.com/app/apikey) → Get API key |
 | Groq (relais) | Oui | [console.groq.com/keys](https://console.groq.com/keys) |
 | Tavily (recherche) | Oui, 1 000 recherches par mois | [app.tavily.com](https://app.tavily.com) |
+| Serper (X-ray Google, recommandé) | Oui, 2 500 recherches offertes, sans carte | [serper.dev](https://serper.dev/api-keys) |
+| SerpApi (X-ray Google, relais) | Oui, 250 recherches par mois | [serpapi.com](https://serpapi.com/manage-api-key) |
 | Brave, Exa (2e et 3e moteurs, interrogés en parallèle de Tavily) | Brave : 5 $ de crédit par mois, carte demandée ; Exa : crédit mensuel | [Brave](https://api-dashboard.search.brave.com), [Exa](https://dashboard.exa.ai/api-keys) |
 | Hunter (emails professionnels, option) | Oui, 25 recherches par mois | [hunter.io/api-keys](https://hunter.io/api-keys) |
 | Bot Telegram | Oui | [@BotFather](https://t.me/BotFather) → `/newbot` |
@@ -92,6 +94,19 @@ Chaque jour : icône Agent X → **Ouvrir la file du jour**. L'extension ouvre c
 5. Tranchez les rejets proposés (n°2) et validez la shortlist (n°3 et 4) : les CV arrivent en pièces jointes, prêts à transmettre.
 6. Indiquez la décision du client : **Placé** ou **Non retenu**.
 
+## Fiche candidat : 4 niveaux
+
+Chaque rubrique est remplie au niveau où l'information devient fiable ; la fiche s'affiche à tout moment sur Telegram (« 🗂 Fiche candidat ») avec ce qui reste à compléter.
+
+| Niveau | Source | Rubriques |
+| --- | --- | --- |
+| 1 Sourcing | Profil public (LinkedIn, Malt) | En poste ou non, dernier poste et entreprise, ancienneté dans l'entreprise, expérience globale, stabilité |
+| 2 Pré-qualification | Formulaire « Votre situation » + questions de précision posées par l'IA | Rémunération (salaire brut annuel ou TJM, montant, package), préavis, disponibilité, diplôme, compétences |
+| 3 Entretien | Compte rendu du recruteur sur Telegram (texte ou vocal), structuré par l'IA | Notes sur la situation, points forts, expérience, personnalité et soft skills |
+| 4 Présentation | Généré par l'IA | CV formaté + fiche candidat .docx, anonymisés (initiales) |
+
+Règle de stabilité : un profil stable dans ses entreprises, et surtout dans la dernière, gagne des points ; des changements très fréquents en coûtent (sauf pour les freelances, dont les missions sont courtes par nature).
+
 ## Continuité de service
 
 Chaque famille de tâches a un fournisseur principal et deux relais (voir `config/defaults.json`). L'agent bascule avant la limite des quotas (90 %), écarte 15 minutes un fournisseur qui enchaîne 3 erreurs, et, si tout est saturé, met l'étape en pause et la reprend seule, avec une alerte Telegram. Une mission ne s'arrête jamais en cours de route.
@@ -109,7 +124,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 58 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 65 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 

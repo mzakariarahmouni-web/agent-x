@@ -23,4 +23,5 @@ export * as hunter from "../worker/src/hunter";
 export * as outbound from "../worker/src/outbound";
 export * as pool from "../worker/src/pool";
 export * as fiche from "../worker/src/fiche";
+export * as talent from "../worker/src/talent";
 export { default as worker } from "../worker/src/index";
