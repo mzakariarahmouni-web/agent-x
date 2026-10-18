@@ -1294,6 +1294,14 @@ await test("limite des 50 appels par exécution : reprise rapide, aucun fourniss
   assert((await X.mission.startEvolution(e, "m_l", "nouvelle consigne")) === false, "mission close rouverte");
 });
 
+await test("notation sur le profil complet : un extrait sans années n'efface pas les 20 ans déjà connus (surdimensionné écarté)", async () => {
+  const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES ('c_s', 'Anna C.', 'linkedin.com', ?, '')").bind(JSON.stringify({ intitule: "Chef de projet SIRH", annees_experience: 20, competences: ["SIRH"] })).run();
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  const r = await X.sourcing.scoreAndStore(e, "m_s", sirh(), [{ candidateId: "c_s", profile: { intitule: "Chef de projet SIRH", source: "linkedin.com" } }], w, 0.1);
+  assert(r[0].match.eliminated && /surdimensionné : 20 ans/.test(r[0].match.reasons.join()), JSON.stringify(r[0].match));
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

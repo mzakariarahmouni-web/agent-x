@@ -259,6 +259,15 @@ export async function scoreAndStore(
   tjmTolerance: number,
 ): Promise<ScoredCandidate[]> {
   const out: ScoredCandidate[] = [];
+  // Le profil noté est le profil complet de la CV-thèque (extrait de recherche fusionné avec ce qu'on savait déjà :
+  // années d'expérience, expériences datées, lieu), pas seulement l'extrait du jour.
+  if (items.length) {
+    const rows = await env.DB.batch(items.map((it) => env.DB.prepare("SELECT profile FROM candidates WHERE id = ?").bind(it.candidateId)));
+    items = items.map((it, i) => {
+      const stored = (rows[i]?.results?.[0] as { profile?: string } | undefined)?.profile;
+      return stored ? { ...it, profile: parseJson<SourcedProfile>(stored, it.profile) } : it;
+    });
+  }
   // Apprentissage : les No go du recruteur (avec motif) orientent la notation des profils suivants.
   const learned = items.length ? await recentNogo(env, missionId) : "";
   // Lots de 5 : requêtes courtes, compatibles avec les limites « par minute » des offres gratuites.
