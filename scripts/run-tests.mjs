@@ -86,7 +86,8 @@ class FakeD1 {
     this.db.exec("BEGIN");
     try {
       const res = [];
-      for (const s of stmts) res.push(await s.run());
+      // Comme D1 : une lecture dans un lot renvoie ses lignes.
+      for (const s of stmts) res.push(/^\s*(select|with)\b/i.test(s.sql) ? await s.all() : await s.run());
       this.db.exec("COMMIT");
       return res;
     } catch (e) {
@@ -1296,6 +1297,7 @@ await test("limite des 50 appels par exécution : reprise rapide, aucun fourniss
 
 await test("notation sur le profil complet : un extrait sans années n'efface pas les 20 ans déjà connus (surdimensionné écarté)", async () => {
   const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_s', 'Chef de projet SIRH', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...sirh(), questionnaire: [] })).run();
   await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES ('c_s', 'Anna C.', 'linkedin.com', ?, '')").bind(JSON.stringify({ intitule: "Chef de projet SIRH", annees_experience: 20, competences: ["SIRH"] })).run();
   const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
   const r = await X.sourcing.scoreAndStore(e, "m_s", sirh(), [{ candidateId: "c_s", profile: { intitule: "Chef de projet SIRH", source: "linkedin.com" } }], w, 0.1);
