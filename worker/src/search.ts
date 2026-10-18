@@ -1,6 +1,6 @@
 import { getConfig, journal, secrets } from "./db";
 import type { Env } from "./env";
-import { fetchJson, HttpError } from "./outbound";
+import { BudgetExhausted, fetchJson, HttpError, isBudgetError } from "./outbound";
 import { dayUsage, isOpen, monthRequests, recordFailure, recordSuccess } from "./usage";
 
 /**
@@ -183,6 +183,7 @@ export async function webSearch(env: Env, query: string | SearchQuery, missionId
       await recordSuccess(env, `search:${engine}`);
       return { engine, hits };
     } catch (e) {
+      if (isBudgetError(e)) throw new BudgetExhausted();
       await failure(env, engine, e, missionId);
       return null;
     }
@@ -225,6 +226,7 @@ export async function webSearchChain(env: Env, query: string | SearchQuery, miss
       await recordSuccess(env, `search:${engine}`);
       return { engine, hits };
     } catch (e) {
+      if (isBudgetError(e)) throw new BudgetExhausted();
       await failure(env, engine, e, missionId);
       soonest = Math.min(soonest, Date.now() + 30 * 60_000);
     }
@@ -269,6 +271,7 @@ export async function readPublicPages(env: Env, urls: string[], missionId?: stri
       }
       return { engine, pages };
     } catch (e) {
+      if (isBudgetError(e)) throw new BudgetExhausted();
       await failure(env, engine as Engine, e, missionId);
     }
   }

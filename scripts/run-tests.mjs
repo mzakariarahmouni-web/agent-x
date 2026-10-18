@@ -1121,7 +1121,7 @@ await test("fiche de poste : rubriques toujours affichées (rémunération, lieu
   for (const k of ["Rémunération : ⚠️ à préciser", "Localisation : ⚠️ à préciser", "Expérience : ⚠️ à préciser", "Langues : Anglais B2", "Exigences incluses : EDIFACT, astreintes ponctuelles", "Profils exclus : profil junior"]) assert(s.includes(k), `${k}\n${s}`);
   assert(f.questions_clarification.some((q) => /TJM ou le salaire/.test(q)) && f.questions_clarification.some((q) => /Où se situe/.test(q)), f.questions_clarification.join(" | "));
   const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, seniorite_max_annees: 9, questions_clarification: [] });
-  assert(X.fiche.remuneration(g) === "salaire 50000 à 60000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
+  assert(X.fiche.remuneration(g) === "salaire 50 000 à 60 000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
 });
 
 await test("fiche candidat niveau 1 : en poste, dernier poste, ancienneté et stabilité lus dans le profil public", () => {
@@ -1268,6 +1268,30 @@ await test("sourcing par requête : plan du tour (requêtes déjà lancées excl
   const again = await X.mission.planWebQueries(e, "m_q", 1, 3);
   assert(!again.queries.some((q) => q.boolean === plan.queries[0].boolean), "requête rejouée");
   assert((await e.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = 'm_q'").first("n")) === 2, "notés");
+});
+
+await test("limite des 50 appels par exécution : reprise rapide, aucun fournisseur écarté ; pages publiques lues une seule fois ; mission close jamais rouverte", async () => {
+  const e = await makeEnv();
+  const saved = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("Too many subrequests by single Worker invocation."); };
+  let err;
+  try {
+    await X.router.ai(e, { family: "volume", system: "x", prompt: "y", json: true });
+  } catch (x) {
+    err = x;
+  }
+  globalThis.fetch = saved;
+  assert(err instanceof X.outbound.BudgetExhausted && err.retryAt.getTime() - Date.now() < 10_000, String(err));
+  const errs = await e.DB.prepare("SELECT COALESCE(SUM(errors), 0) AS n FROM usage").first("n");
+  assert(errs === 0, `${errs} erreur(s) enregistrée(s) à tort`);
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_l', 'Chef de projet AMOA', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...fiche(), questionnaire: [] })).run();
+  await X.mission.sourceQueryAndScore(e, "m_l", 1, X.sourcing.buildBooleanQueries(fiche(), 1, 1)[0]);
+  const first = await X.mission.enrichBatch(e, "m_l", 3);
+  const second = await X.mission.enrichBatch(e, "m_l", 3);
+  assert(first.attempted >= 1 && second.attempted === 0, `${JSON.stringify(first)} puis ${JSON.stringify(second)}`);
+  await e.DB.prepare("UPDATE missions SET status = 'terminee' WHERE id = 'm_l'").run();
+  e.EVOLUTION = { async create() { throw new Error("ne doit pas être appelé"); } };
+  assert((await X.mission.startEvolution(e, "m_l", "nouvelle consigne")) === false, "mission close rouverte");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

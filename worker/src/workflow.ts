@@ -12,6 +12,7 @@ import {
   sourceQueryAndScore,
   applyFicheChange,
   buildShortlist,
+  enrichBatch,
   enrichTopProfiles,
   getMission,
   markPresented,
@@ -32,6 +33,7 @@ import { getSetting } from "./db";
 import { runCron } from "./cron";
 import { ensureSchema } from "./migrate";
 import { reevaluatePool } from "./pool";
+import { BudgetExhausted } from "./outbound";
 import { SearchUnavailable } from "./search";
 import type { SourcingRound } from "./sourcing";
 import { notify } from "./telegram";
@@ -72,14 +74,16 @@ async function resilientStep<T>(env: Env, step: WorkflowStep, name: string, fn: 
       try {
         return { ok: true, value: await fn() };
       } catch (e) {
-        if (e instanceof AllProvidersDown || e instanceof SearchUnavailable) return { ok: false, retryAt: e.retryAt.toISOString(), reason: e.message };
+        if (e instanceof AllProvidersDown || e instanceof SearchUnavailable || e instanceof BudgetExhausted) return { ok: false, retryAt: e.retryAt.toISOString(), reason: e.message };
         throw e;
       }
     };
     // Les valeurs renvoyées par les étapes sont des données simples (nombres, chaînes, objets JSON).
     const out = (await step.do(`${name}#${i}`, RETRY, attempt as never)) as Outcome<T>;
     if (out.ok) return out.value;
-    if (i === 0) {
+    // Limite d'appels de l'exécution : simple reprise, sans alerte.
+    const silent = Date.parse(out.retryAt) - Date.now() < 60_000;
+    if (i === 0 && !silent) {
       await step.do(`${name}#${i}:alerte`, async () => {
         await notify(env, `⏸ Pause automatique (${name}) : ${out.reason}\nReprise prévue vers ${new Date(out.retryAt).toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}. Rien n'est perdu.`);
         return true;
@@ -93,6 +97,18 @@ async function resilientStep<T>(env: Env, step: WorkflowStep, name: string, fn: 
  * Un tour de sourcing, une requête par étape avec une courte pause entre deux : chaque exécution reste sous la limite
  * de 50 appels sortants de l'offre gratuite (recherche + extraction + notation par requête).
  */
+/** Lecture des pages publiques par lots de 3, une étape par lot (limite d'appels de l'offre gratuite). */
+async function enrichSteps(env: Env, step: WorkflowStep, id: string, total: number, tag: string): Promise<number> {
+  let enriched = 0;
+  for (let k = 0; k * 3 < total; k++) {
+    const r = await resilientStep(env, step, `${tag}:${k}`, () => enrichBatch(env, id, 3));
+    enriched += r.enriched;
+    if (r.attempted < 3) break;
+    await step.sleep(`${tag}:${k}:pause`, "3 seconds");
+  }
+  return enriched;
+}
+
 async function sourceRoundSteps(env: Env, step: WorkflowStep, id: string, round: SourcingRound, tag: string, max?: number): Promise<number> {
   const plan = await step.do(`${tag}:plan`, () => planWebQueries(env, id, round, max));
   let n = 0;
@@ -224,7 +240,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       widened = good < cfg.poolTarget ? await sourceRoundSteps(env, step, id, 2, "sourcing:elargi") : 0;
     }
     // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
-    const enriched = await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id));
+    const enriched = legacy ? await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id)) : await enrichSteps(env, step, id, 9, "sourcing:lecture");
     await step.do("sourcing:rapport", async () => {
       await reevaluatePool(env, id);
       const pool = await poolStats(env, id);
@@ -238,7 +254,8 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       // Rien d'assez pertinent : tour de variantes immédiat (sans attendre le sourcing continu).
       if (legacy) await this.resilient(step, "sourcing:variantes", () => sourceFromWeb(env, id, 3));
       else await sourceRoundSteps(env, step, id, 3, "sourcing:variantes", 4);
-      await this.resilient(step, "sourcing:variantes-lecture", () => enrichTopProfiles(env, id, 5));
+      if (legacy) await this.resilient(step, "sourcing:variantes-lecture", () => enrichTopProfiles(env, id, 5));
+      else await enrichSteps(env, step, id, 6, "sourcing:variantes-lecture");
       cards = await step.do("revue:cartes-variantes", () => sendReviewCards(env, id));
       if (cards === 0) {
         await step.do("revue:aucune", async () => {
@@ -280,7 +297,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         const pool = await step.do(`continu#${tick}:vivier`, () => poolStats(env, id));
         if (pool.active < cfg.poolTarget && pool.pending === 0) {
           await sourceRoundSteps(env, step, id, 3, `continu#${tick}`, 4);
-          await this.resilient(step, `continu#${tick}:lecture`, () => enrichTopProfiles(env, id, 5));
+          await enrichSteps(env, step, id, 6, `continu#${tick}:lecture`);
           await step.do(`continu#${tick}:cartes`, () => sendReviewCards(env, id));
         }
       }
@@ -375,6 +392,8 @@ export class EvolutionWorkflow extends WorkflowEntrypoint<Env, EvolutionParams> 
   async run(event: WorkflowEvent<EvolutionParams>, step: WorkflowStep): Promise<string> {
     const env = this.env;
     const { missionId: id, text } = event.payload;
+    const open = await step.do("mission", async () => (await getMission(env, id)).status === "en_cours");
+    if (!open) return "mission close : évolution ignorée";
     const summary = await resilientStep(env, step, "fiche", () => evolveFiche(env, id, text));
     const scope = await step.do("tri", () => applyScopeChange(env, id));
     await step.do("rapport", async () => {
@@ -382,7 +401,7 @@ export class EvolutionWorkflow extends WorkflowEntrypoint<Env, EvolutionParams> 
       return true;
     });
     const found = await sourceRoundSteps(env, step, id, 1, "sourcing", 6);
-    await resilientStep(env, step, "lecture", () => enrichTopProfiles(env, id, 8));
+    await enrichSteps(env, step, id, 9, "lecture");
     const cards = await step.do("cartes", async () => {
       await reevaluatePool(env, id);
       return sendReviewCards(env, id);

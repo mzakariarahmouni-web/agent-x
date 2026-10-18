@@ -233,7 +233,9 @@ export function experienceRange(f: Fiche): string | null {
 /** Rémunération lisible : TJM et/ou salaire, « à préciser » si rien. */
 export function remuneration(f: Fiche): string {
   const b = f.budget;
-  const range = (min: number | null, max: number | null, unit: string) => (min && max ? `${min} à ${max} ${unit}` : max ? `jusqu'à ${max} ${unit}` : min ? `à partir de ${min} ${unit}` : "");
+  const n = (x: number) => x.toLocaleString("fr-FR").replace(/\u202f/g, " ");
+  const range = (min: number | null, max: number | null, unit: string) =>
+    min && max ? (min === max ? `${n(max)} ${unit}` : `${n(min)} à ${n(max)} ${unit}`) : max ? `jusqu'à ${n(max)} ${unit}` : min ? `à partir de ${n(min)} ${unit}` : "";
   const tjm = range(b.tjm_min, b.tjm_max, "€ / jour");
   const sal = range(b.salaire_min, b.salaire_max, "€ brut / an");
   return [tjm && `TJM ${tjm}`, sal && `salaire ${sal}`].filter(Boolean).join(" · ") || "⚠️ à préciser";

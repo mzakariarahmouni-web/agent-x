@@ -163,7 +163,9 @@ async function handleText(env: Env, b: Bot, msg: TgMessage, ctx: ExecutionContex
         b,
         started
           ? "🔄 Évolution reçue : je mets à jour la fiche, je re-trie le vivier (profils hors critères retirés, y compris les Go) puis je relance un sourcing ciblé. Résultat dans quelques minutes."
-          : "Cette évolution est déjà en cours de traitement.",
+          : (await getMission(env, awaiting.missionId)).status !== "en_cours"
+            ? "Cette mission est close : relance une nouvelle mission avec la fiche à jour."
+            : "Cette évolution est déjà en cours de traitement.",
       ));
     }
     if (awaiting.validationId) await answerValidation(env, awaiting.validationId, "modifiee", text);

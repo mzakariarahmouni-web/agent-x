@@ -1,6 +1,6 @@
 import { getConfig, getSetting, journal, secrets } from "../db";
 import type { Env } from "../env";
-import { HttpError } from "../outbound";
+import { BudgetExhausted, HttpError, isBudgetError } from "../outbound";
 import { dayUsage, isOpen, recordFailure, recordSuccess } from "../usage";
 import { callProvider, type ChatRequest, type ProviderName, providerAvailable, supportsFiles } from "./providers";
 
@@ -136,6 +136,7 @@ export async function ai<T = unknown>(env: Env, call: AiCall<T>): Promise<AiResu
       await recordSuccess(env, link, res.units);
       return { data, text: res.text, provider: link };
     } catch (e) {
+      if (isBudgetError(e)) throw new BudgetExhausted();
       const err = e as Error;
       const status = e instanceof HttpError ? e.status : 0;
       // Clé refusée ou modèle réservé : écarté jusqu'à minuit. Quota du jour épuisé (429 « per day ») : idem.

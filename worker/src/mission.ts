@@ -165,18 +165,30 @@ export async function sourceFromWeb(env: Env, id: string, round: SourcingRound =
  * Seuls les profils proches du seuil ou au-dessus sont lus, pour économiser les quotas.
  */
 export async function enrichTopProfiles(env: Env, id: string, max = 10): Promise<number> {
+  return (await enrichBatch(env, id, max)).enriched;
+}
+
+/** Un lot de pages publiques pas encore lues (les meilleurs scores d'abord) ; chaque page n'est lue qu'une fois. */
+export async function enrichBatch(env: Env, id: string, max: number): Promise<{ attempted: number; enriched: number }> {
   const cfg = await getConfig(env);
-  const f = readFiche((await getMission(env, id)).fiche);
+  const m = await getMission(env, id);
+  if (m.status !== "en_cours") return { attempted: 0, enriched: 0 };
+  const f = readFiche(m.fiche);
   const { results } = await env.DB.prepare(
     `SELECT a.candidate_id, COALESCE(c.linkedin_url, c.source_url) AS url FROM applications a JOIN candidates c ON c.id = a.candidate_id
      WHERE a.mission_id = ? AND a.state = 'score' AND a.score >= ? AND COALESCE(c.linkedin_url, c.source_url) IS NOT NULL
+       AND json_extract(c.profile, '$.page_lue') IS NULL
      ORDER BY a.score DESC LIMIT ?`,
   )
     .bind(id, cfg.mission.review_min_score ?? 30, max)
     .all<{ candidate_id: string; url: string }>();
-  const enriched = await enrichFromPublicPages(env, id, (results ?? []).map((r) => ({ candidateId: r.candidate_id, url: r.url })));
+  const rows = results ?? [];
+  if (!rows.length) return { attempted: 0, enriched: 0 };
+  const enriched = await enrichFromPublicPages(env, id, rows.map((r) => ({ candidateId: r.candidate_id, url: r.url })));
+  // Page lue ou illisible : on ne la redemande pas.
+  await env.DB.batch(rows.map((r) => env.DB.prepare("UPDATE candidates SET profile = json_set(profile, '$.page_lue', 1) WHERE id = ?").bind(r.candidate_id)));
   if (enriched.length) await scoreAndStore(env, id, f, enriched, cfg.matching.weights, cfg.matching.tjm_tolerance);
-  return enriched.length;
+  return { attempted: rows.length, enriched: enriched.length };
 }
 
 /** Vivier de la mission : profils à revoir (au-dessus du seuil), écartés, et profils actifs (Go et au-delà). */
@@ -372,6 +384,8 @@ export async function planWebQueries(env: Env, id: string, round: SourcingRound,
 /** Lance l'évolution dans son propre Workflow ; une même consigne n'est jamais appliquée deux fois. */
 export async function startEvolution(env: Env, missionId: string, text: string): Promise<boolean> {
   const clean = text.trim().slice(0, 1000);
+  const st = await env.DB.prepare("SELECT status FROM missions WHERE id = ?").bind(missionId).first<{ status: string }>();
+  if (st?.status !== "en_cours") return false; // mission close : on ne la rouvre pas par une évolution
   const dup = await env.DB.prepare("SELECT 1 FROM journal WHERE mission_id = ? AND action = 'evolution_demandee' AND detail = ? LIMIT 1").bind(missionId, JSON.stringify({ texte: clean })).first();
   if (dup) return false;
   await journal(env, "recruteur", "evolution_demandee", { texte: clean }, { mission: missionId });

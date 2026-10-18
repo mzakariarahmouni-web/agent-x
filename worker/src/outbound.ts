@@ -43,3 +43,16 @@ export async function fetchJson<T>(env: OutboundEnv, provider: string, url: stri
     clearTimeout(timer);
   }
 }
+
+/**
+ * Limite de l'offre gratuite atteinte : 50 appels sortants par exécution. Ce n'est la faute d'aucun fournisseur :
+ * l'étape reprend quelques secondes plus tard, dans une nouvelle exécution, sans écarter personne.
+ */
+export class BudgetExhausted extends Error {
+  readonly retryAt = new Date(Date.now() + 5_000);
+  constructor() {
+    super("Limite d'appels de l'exécution atteinte, reprise dans quelques secondes");
+  }
+}
+
+export const isBudgetError = (e: unknown) => e instanceof BudgetExhausted || /too many subrequests/i.test((e as Error)?.message ?? "");
