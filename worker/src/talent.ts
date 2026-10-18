@@ -99,6 +99,14 @@ const ym = (s?: string | null): number | null => {
   return m ? Number(m[1]) + (m[2] ? (Number(m[2]) - 1) / 12 : 0) : null;
 };
 
+/** Années d'expérience : celles déclarées, sinon depuis le début de la première expérience datée (stages exclus). */
+export function careerYears(p: Profile & { experiences?: Experience[] }, now = new Date()): number | null {
+  if (typeof p.annees_experience === "number") return p.annees_experience;
+  const starts = (p.experiences ?? []).filter((e) => !/stag|intern|altern|apprenti/i.test(e.poste ?? "")).map((e) => ym(e.debut)).filter((x): x is number => x != null);
+  if (!starts.length) return null;
+  return Math.max(0, Math.round(now.getUTCFullYear() + now.getUTCMonth() / 12 - Math.min(...starts)));
+}
+
 export interface Stability {
   /** Années dans le poste actuel (ou le dernier). */
   current: number | null;

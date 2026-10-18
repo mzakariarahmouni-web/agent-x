@@ -1,7 +1,7 @@
 import { deleteSetting, getSetting, journal, nowIso, parseJson, setSetting } from "./db";
 import type { Env } from "./env";
 import { readFiche } from "./fiche";
-import { applyInterviewNotes, getMission, storeBriefFile, talentSheetText } from "./mission";
+import { applyInterviewNotes, getMission, startEvolution, storeBriefFile, talentSheetText } from "./mission";
 import { missingAt, talentView, transcribe } from "./talent";
 import { eraseCandidate, findCandidate } from "./rgpd";
 import { derivedSecret, newId, safeEqual } from "./security";
@@ -157,8 +157,14 @@ async function handleText(env: Env, b: Bot, msg: TgMessage, ctx: ExecutionContex
   if (awaiting && awaiting.kind !== "cr" && text) {
     await deleteSetting(env, AWAIT_KEY);
     if (awaiting.kind === "evolution") {
-      await sendMissionEvent(env, awaiting.missionId, "point", { kind: "evolution", text });
-      return void (await send(env, b, "🔄 Évolution reçue : je mets à jour la fiche et je re-score le vivier."));
+      const started = await startEvolution(env, awaiting.missionId, text);
+      return void (await send(
+        env,
+        b,
+        started
+          ? "🔄 Évolution reçue : je mets à jour la fiche, je re-trie le vivier (profils hors critères retirés, y compris les Go) puis je relance un sourcing ciblé. Résultat dans quelques minutes."
+          : "Cette évolution est déjà en cours de traitement.",
+      ));
     }
     if (awaiting.validationId) await answerValidation(env, awaiting.validationId, "modifiee", text);
     await sendMissionEvent(env, awaiting.missionId, awaiting.kind, { action: "mod", text });

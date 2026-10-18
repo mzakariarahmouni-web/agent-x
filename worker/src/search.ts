@@ -49,7 +49,7 @@ export function engineQuery(engine: Engine, q: SearchQuery): string {
 }
 
 export function naturalQuery(boolean: string): string {
-  const withoutExcl = boolean.replace(/(^|\s)-("[^"]*"|\S+)/g, " ");
+  const withoutExcl = boolean.replace(/(^|\s)-("[^"]*"|\S+)/g, " ").replace(/\bintitle:/g, "");
   const groups = withoutExcl.replace(/\(([^()]*)\)/g, (_, inner: string) =>
     inner
       .split(/\s+OR\s+/)

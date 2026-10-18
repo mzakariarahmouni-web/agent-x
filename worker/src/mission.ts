@@ -6,10 +6,12 @@ import { getConfig, getSetting, journal, nowIso, parseJson, setSetting } from ".
 import type { Env } from "./env";
 import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, parseSender, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
-import { eliminationSummary } from "./pool";
+import { eliminationSummary, reevaluatePool } from "./pool";
 import { sendReviewCards } from "./review";
 import { addBusinessHours, frDate, nextSlot, type ScheduleConfig } from "./schedule";
-import { buildBooleanQueries, enrichFromPublicPages, scoreAndStore, searchCvtheque, sourceRound, type SourcedProfile, type SourcingRound } from "./sourcing";
+import { buildBooleanQueries, enrichFromPublicPages, plannedQueries, scoreAndStore, searchCvtheque, sourceOneQuery, sourceRound, type SourcedProfile, type SourcingRound } from "./sourcing";
+import { evaluate } from "./matching";
+import type { SearchQuery } from "./search";
 import { bot, type Button, notify, send, sendDocument } from "./telegram";
 import { createValidation, proposeRejection, validationButtons } from "./validations";
 
@@ -298,29 +300,13 @@ export async function qualifyPending(env: Env, id: string): Promise<{ qualified:
   return { qualified, proposedRejections };
 }
 
-/** F2 : évolution du besoin en cours de mission (nouvelle version, re-scoring, apprentissage client). */
-export async function applyEvolution(env: Env, id: string, instruction: string): Promise<string> {
-  const cfg = await getConfig(env);
+/** F2 (1/3) : nouvelle version de la fiche, apprentissage du client. Renvoie le résumé de la fiche. */
+export async function evolveFiche(env: Env, id: string, instruction: string): Promise<string> {
   const m = await getMission(env, id);
   const prev = readFiche(m.fiche);
   const next = await buildFiche(env, { raw: m.raw_text, previous: prev, instruction, missionId: id });
   next.questionnaire = prev.questionnaire;
   await saveFiche(env, id, next, m.version + 1, `évolution : ${instruction.slice(0, 200)}`);
-  // Re-scoring du vivier existant avant tout nouveau sourcing.
-  const { results } = await env.DB.prepare(
-    "SELECT a.candidate_id, a.state, c.profile, c.full_name FROM applications a JOIN candidates c ON c.id = a.candidate_id WHERE a.mission_id = ?",
-  )
-    .bind(id)
-    .all<{ candidate_id: string; state: string; profile: string; full_name: string | null }>();
-  const items = (results ?? []).map((r) => ({ candidateId: r.candidate_id, profile: parseJson<SourcedProfile>(r.profile, { source: "cvtheque" }) }));
-  const scored = await scoreAndStore(env, id, next, items, cfg.matching.weights, cfg.matching.tjm_tolerance);
-  const out = scored.filter((s) => s.match.eliminated).map((s) => s.candidateId);
-  const contacted = (results ?? []).filter((r) => out.includes(r.candidate_id) && ["contacte", "repondu", "reponses_recues", "qualifie"].includes(r.state));
-  if (contacted.length) {
-    await env.DB.batch(
-      contacted.map((r) => env.DB.prepare("UPDATE applications SET state = 'hors_perimetre', next_action_at = NULL WHERE mission_id = ? AND candidate_id = ?").bind(id, r.candidate_id)),
-    );
-  }
   // Apprentissage du comportement client : la trajectoire des évolutions est réutilisée aux missions suivantes.
   if (m.client_id) {
     const c = await env.DB.prepare("SELECT learned FROM clients WHERE id = ?").bind(m.client_id).first<{ learned: string }>();
@@ -328,15 +314,87 @@ export async function applyEvolution(env: Env, id: string, instruction: string):
     learned.evolutions = [...(learned.evolutions ?? []), `${new Date().toISOString().slice(0, 10)} (${next.intitule}) : ${instruction.slice(0, 200)}`].slice(-30);
     await env.DB.prepare("UPDATE clients SET learned = ? WHERE id = ?").bind(JSON.stringify(learned), m.client_id).run();
   }
-  // Les nouveaux profils au-dessus du seuil repassent par ta revue (Go / No go) avant tout contact.
+  await journal(env, "agent", "evolution", { instruction, version: m.version + 1 }, { mission: id });
+  return `🔄 ${next.intitule} · version ${m.version + 1}\n${ficheSummary(next)}`;
+}
+
+/**
+ * F2 (2/3) : les règles de la nouvelle fiche rejouées sur tout le vivier, sans IA. Les profils revus, retenus (Go)
+ * ou déjà contactés qui sortent du périmètre (ex. surdimensionnés) sont retirés : plus aucun contact ni relance.
+ */
+export async function applyScopeChange(env: Env, id: string): Promise<{ restored: number; eliminated: number; removed: string[] }> {
+  const cfg = await getConfig(env);
+  const pool = await reevaluatePool(env, id);
+  const f = readFiche((await getMission(env, id)).fiche);
+  const { results } = await env.DB.prepare(
+    `SELECT a.id, a.score_detail, c.profile, c.full_name FROM applications a JOIN candidates c ON c.id = a.candidate_id
+     WHERE a.mission_id = ? AND a.state IN ('en_revue','go','a_contacter','contacte','repondu','reponses_recues','en_attente','qualifie')`,
+  )
+    .bind(id)
+    .all<{ id: string; score_detail: string; profile: string; full_name: string | null }>();
+  const removed: string[] = [];
+  const stmts: D1PreparedStatement[] = [];
+  for (const r of results ?? []) {
+    const match = evaluate(f, parseJson<SourcedProfile>(r.profile, { source: "inconnu" }), parseJson(r.score_detail, {}), cfg.matching.weights, cfg.matching.tjm_tolerance);
+    if (!match.eliminated) continue;
+    removed.push(`${r.full_name ?? "?"} (${match.reasons[0]})`);
+    stmts.push(
+      env.DB.prepare("UPDATE applications SET state = 'hors_perimetre', next_action_at = NULL, eliminated_reason = ?, updated_at = datetime('now') WHERE id = ?").bind(match.reasons.join(" ; "), r.id),
+    );
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  await env.DB.prepare("UPDATE linkedin_queue SET status = 'annule' WHERE status = 'a_envoyer' AND application_id IN (SELECT id FROM applications WHERE mission_id = ? AND state = 'hors_perimetre')").bind(id).run();
+  return { restored: pool.restored, eliminated: pool.eliminated, removed };
+}
+
+/** Une requête de sourcing et la notation de ses profils (une étape de Workflow). */
+export async function sourceQueryAndScore(env: Env, id: string, round: SourcingRound, q: SearchQuery): Promise<number> {
+  const cfg = await getConfig(env);
+  const m = await getMission(env, id);
+  if (m.status !== "en_cours") return 0;
+  const items = await sourceOneQuery(env, id, round, q);
+  await scoreAndStore(env, id, readFiche(m.fiche), items, cfg.matching.weights, cfg.matching.tjm_tolerance);
+  return items.length;
+}
+
+/** Requêtes à lancer pour un tour (tour 3 de variantes si le tour demandé est épuisé). */
+export async function planWebQueries(env: Env, id: string, round: SourcingRound, max?: number): Promise<{ round: SourcingRound; queries: SearchQuery[] }> {
+  const cfg = await getConfig(env);
+  const m = await getMission(env, id);
+  if (m.status !== "en_cours") return { round, queries: [] };
+  const f = readFiche(m.fiche);
+  const n = max ?? Math.ceil(cfg.search.queries_per_mission / 2);
+  const queries = await plannedQueries(env, id, f, round, n);
+  if (queries.length || round === 3) return { round, queries };
+  return { round: 3, queries: await plannedQueries(env, id, f, 3, n) };
+}
+
+/** Lance l'évolution dans son propre Workflow ; une même consigne n'est jamais appliquée deux fois. */
+export async function startEvolution(env: Env, missionId: string, text: string): Promise<boolean> {
+  const clean = text.trim().slice(0, 1000);
+  const dup = await env.DB.prepare("SELECT 1 FROM journal WHERE mission_id = ? AND action = 'evolution_demandee' AND detail = ? LIMIT 1").bind(missionId, JSON.stringify({ texte: clean })).first();
+  if (dup) return false;
+  await journal(env, "recruteur", "evolution_demandee", { texte: clean }, { mission: missionId });
+  if (!env.EVOLUTION) throw new Error("Workflow d'évolution indisponible");
+  await env.EVOLUTION.create({ id: `evo-${missionId}-${Date.now()}`, params: { missionId, text: clean } });
+  return true;
+}
+
+/** Compatibilité (tests, anciens Workflows) : évolution complète sans nouveau sourcing. */
+export async function applyEvolution(env: Env, id: string, instruction: string): Promise<string> {
+  const summary = await evolveFiche(env, id, instruction);
+  const scope = await applyScopeChange(env, id);
   const cards = await sendReviewCards(env, id);
-  await journal(env, "agent", "evolution", { instruction, version: m.version + 1, hors_perimetre: contacted.length }, { mission: id });
+  return evolutionReport(summary, scope, cards);
+}
+
+export function evolutionReport(summary: string, scope: { restored: number; eliminated: number; removed: string[] }, cards: number): string {
   return [
-    `🔄 ${next.intitule} · version ${m.version + 1}`,
-    ficheSummary(next),
+    summary,
     "",
-    `Vivier re-scoré : ${items.length} profil(s) · ${cards} nouveau(x) profil(s) à revoir (cartes envoyées).`,
-    contacted.length ? `${contacted.length} candidat(s) déjà contacté(s) sortent du périmètre : ils restent en CV-thèque (${contacted.map((c) => c.full_name ?? "?").join(", ")}).` : "",
+    `Vivier re-trié avec la nouvelle fiche : ${scope.eliminated} profil(s) hors critères${scope.restored ? `, ${scope.restored} rétabli(s)` : ""}.`,
+    scope.removed.length ? `Retirés (plus aucun contact) : ${scope.removed.slice(0, 8).join(" ; ")}${scope.removed.length > 8 ? "…" : ""}` : "",
+    cards ? `${cards} profil(s) à revoir : cartes envoyées.` : "",
   ]
     .filter(Boolean)
     .join("\n");

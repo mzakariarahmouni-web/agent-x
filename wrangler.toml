@@ -29,6 +29,12 @@ name = "agent-x-mission"
 binding = "MISSION"
 class_name = "MissionWorkflow"
 
+# Évolution du besoin en cours de mission : nouvelle fiche, vivier re-trié, sourcing ciblé, nouvelles cartes.
+[[workflows]]
+name = "agent-x-evolution"
+binding = "EVOLUTION"
+class_name = "EvolutionWorkflow"
+
 # Planificateur : un Workflow qui se réveille toutes les 15 min (créneaux d'envoi, relances, réponses email, rappels,
 # purge RGPD la nuit). Il ne consomme aucun des 5 déclencheurs cron gratuits du compte, partagés avec les autres projets.
 [[workflows]]

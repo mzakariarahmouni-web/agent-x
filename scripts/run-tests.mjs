@@ -1120,7 +1120,7 @@ await test("fiche de poste : rubriques toujours affichées (rémunération, lieu
   const s = X.fiche.ficheSummary(f);
   for (const k of ["Rémunération : ⚠️ à préciser", "Localisation : ⚠️ à préciser", "Expérience : ⚠️ à préciser", "Langues : Anglais B2", "Exigences incluses : EDIFACT, astreintes ponctuelles", "Profils exclus : profil junior"]) assert(s.includes(k), `${k}\n${s}`);
   assert(f.questions_clarification.some((q) => /TJM ou le salaire/.test(q)) && f.questions_clarification.some((q) => /Où se situe/.test(q)), f.questions_clarification.join(" | "));
-  const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, questions_clarification: [] });
+  const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, seniorite_max_annees: 9, questions_clarification: [] });
   assert(X.fiche.remuneration(g) === "salaire 50000 à 60000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
 });
 
@@ -1202,6 +1202,72 @@ await test("planificateur : un passage toutes les 15 min au plus (jamais deux en
   e.PLANIFICATEUR = { async create({ id }) { created.push(id); return { id }; }, async get(id) { return { async status() { return { status: "running" }; } }; } };
   await X.cron.ensureScheduler(e);
   assert(created.length === 1 && (await X.db.getSetting(e, "planificateur_id")) === created[0], created.join());
+});
+
+const sirh = () => ({ ...fiche(), intitule: "Chef de projet SIRH", localisation: "Paris", competences_obligatoires: ["SIRH", "Workday"], synonymes: [], niveau_elargi: { intitules_proches: ["Consultant SIRH"], competences_adjacentes: [], seniorite_min_annees: 6 }, seniorite_min_annees: 7, seniorite_max_annees: 9 });
+
+await test("expérience max : fourchette « 7 à 9 ans » dans la fiche ; surdimensionnés écartés (années ou poste de direction)", () => {
+  const f = X.fiche.normalizeFiche({ intitule: "Chef de projet SIRH", competences_obligatoires: ["SIRH"], mots_cles: ["SIRH", "Workday", "paie"], eliminatoires: [], seniorite_min_annees: 7, seniorite_max_annees: 9 });
+  assert(X.fiche.ficheSummary(f).includes("Expérience : 7 à 9 ans"), X.fiche.ficheSummary(f));
+  const g = X.fiche.normalizeFiche({ intitule: "x", competences_obligatoires: [], mots_cles: ["a", "b", "c"], eliminatoires: [], seniorite_min_annees: 7, localisation: "Paris", budget: { tjm_max: 600 } });
+  assert(g.questions_clarification.some((q) => /Expérience maximum/.test(q)) && /12 ans/.test(X.fiche.experienceRange(g)), g.questions_clarification.join(" | "));
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  const ev = (p) => X.matching.evaluate(sirh(), { competences: ["SIRH", "Workday"], ...p }, {}, w);
+  assert(ev({ intitule: "Chef de projet SIRH", annees_experience: 15 }).reasons.some((r) => /surdimensionné : 15 ans/.test(r)), "15 ans");
+  assert(!ev({ intitule: "Chef de projet SIRH", annees_experience: 10 }).eliminated, "10 ans toléré (max + 1)");
+  assert(ev({ intitule: "Directeur de projet SIRH", annees_experience: 8 }).reasons.some((r) => /poste de direction/.test(r)), "directeur");
+  assert(ev({ intitule: "Head of HRIS" }).eliminated, "head of");
+  assert(ev({ intitule: "Chef de projet SIRH", experiences: [{ poste: "Consultant", debut: "2008-01" }] }).reasons.some((r) => /surdimensionné/.test(r)), "années déduites des expériences");
+  assert(!X.matching.evaluate({ ...sirh(), intitule: "Directeur SIRH" }, { intitule: "Directeur SIRH", annees_experience: 8, competences: ["SIRH"] }, {}, w).eliminated, "mission de direction : pas d'exclusion");
+});
+
+await test("ciblage : X-ray « intitle: » en premier, intitulés de direction exclus de la recherche, Tavily sans opérateurs", () => {
+  const qs = X.sourcing.buildBooleanQueries(sirh(), 1, 10);
+  assert(qs[0].label === "titre exact" && qs[0].boolean.startsWith('intitle:("Chef de projet SIRH" OR "Consultant SIRH")'), qs[0].boolean);
+  assert(qs.filter((q) => /linkedin/.test(q.domain)).every((q) => q.boolean.includes('-directeur -director -"head of"')), qs.map((q) => q.boolean).join("\n"));
+  assert(X.search.engineQuery("serper", qs[0]).startsWith("site:fr.linkedin.com/in intitle:("), "Google garde intitle:");
+  const nat = X.search.engineQuery("tavily", qs[0]);
+  assert(!/intitle|directeur/.test(nat), nat);
+  const dir = X.sourcing.buildBooleanQueries({ ...sirh(), intitule: "Directeur des systèmes RH" }, 1, 10);
+  assert(!dir.some((q) => q.boolean.includes("-directeur")), "mission de direction");
+});
+
+await test("évolution : traitée à part (même pendant une revue), vivier re-trié, Go surdimensionnés retirés, jamais deux fois", async () => {
+  const e = await makeEnv();
+  const created = [];
+  e.EVOLUTION = { async create(o) { created.push(o); return { id: o.id }; } };
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_e', 'Chef de projet SIRH', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...sirh(), questionnaire: [] })).run();
+  const mk = async (id, profile, state) => {
+    await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES (?, ?, 'linkedin.com', ?, '')").bind("c_" + id, id, JSON.stringify(profile)).run();
+    await e.DB.prepare("INSERT INTO applications (id, mission_id, candidate_id, state, score, score_detail) VALUES (?, 'm_e', ?, ?, 60, '{}')").bind("a_" + id, "c_" + id, state).run();
+  };
+  await mk("senior", { intitule: "Directeur de projet SIRH", annees_experience: 18, competences: ["SIRH"] }, "go");
+  await mk("bon", { intitule: "Chef de projet SIRH", annees_experience: 8, competences: ["SIRH", "Workday"] }, "go");
+  await e.DB.prepare("INSERT INTO linkedin_queue (id, application_id, profile_url, message, due_at) VALUES ('l1', 'a_senior', 'https://x', 'm', datetime('now'))").run();
+  const r = await X.mission.applyScopeChange(e, "m_e");
+  assert(r.removed.length === 1 && /senior/.test(r.removed[0]), JSON.stringify(r));
+  assert((await e.DB.prepare("SELECT state FROM applications WHERE id = 'a_senior'").first("state")) === "hors_perimetre" && (await e.DB.prepare("SELECT state FROM applications WHERE id = 'a_bon'").first("state")) === "go", "états");
+  assert((await e.DB.prepare("SELECT status FROM linkedin_queue WHERE id = 'l1'").first("status")) === "annule", "file LinkedIn");
+  assert((await X.mission.startEvolution(e, "m_e", "entre 7 et 9 ans maximum")) === true && created.length === 1 && created[0].params.missionId === "m_e", "lancement");
+  assert((await X.mission.startEvolution(e, "m_e", "entre 7 et 9 ans maximum")) === false && created.length === 1, "doublon");
+  const secret = await X.security.derivedSecret(e.ADMIN_TOKEN, "telegram");
+  const post = (u) => X.worker.fetch(new Request("https://x/telegram/webhook", { method: "POST", headers: { "x-telegram-bot-api-secret-token": secret }, body: JSON.stringify(u) }), e, { waitUntil() {} });
+  events.length = 0;
+  await post({ callback_query: { id: "c", data: "ev:m_e", message: { message_id: 1, chat: { id: 42 } } } });
+  await post({ message: { message_id: 2, chat: { id: 42 }, text: "Profils entre 7 et 9 ans, pas de directeurs" } });
+  assert(created.length === 2 && !events.some((x) => x.type === "point"), "évolution par son propre Workflow, pas d'événement en attente");
+});
+
+await test("sourcing par requête : plan du tour (requêtes déjà lancées exclues), une requête = recherche + extraction + notation", async () => {
+  const e = await makeEnv();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_q', 'Chef de projet AMOA', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...fiche(), questionnaire: [] })).run();
+  const plan = await X.mission.planWebQueries(e, "m_q", 1, 3);
+  assert(plan.round === 1 && plan.queries.length === 3, JSON.stringify(plan));
+  const n = await X.mission.sourceQueryAndScore(e, "m_q", 1, plan.queries[0]);
+  assert(n === 2, `${n}`);
+  const again = await X.mission.planWebQueries(e, "m_q", 1, 3);
+  assert(!again.queries.some((q) => q.boolean === plan.queries[0].boolean), "requête rejouée");
+  assert((await e.DB.prepare("SELECT COUNT(*) AS n FROM applications WHERE mission_id = 'm_q'").first("n")) === 2, "notés");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

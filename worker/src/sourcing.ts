@@ -1,7 +1,7 @@
 import { ai } from "./ai/router";
 import { journal, parseJson } from "./db";
 import type { Env } from "./env";
-import { cleanTerm, type Fiche } from "./fiche";
+import { cleanTerm, experienceRange, type Fiche } from "./fiche";
 import { evaluate, isLanguage, type MatchResult, type Profile, type SubScores } from "./matching";
 import { recentNogo } from "./review";
 import { isOptedOut } from "./rgpd";
@@ -29,6 +29,10 @@ const orGroup = (terms: string[]) => {
 
 /** Exclusions : pages d'offres d'emploi et de cabinets, pas des personnes. */
 export const EXCLUSIONS = '-"offre d\'emploi" -recrute -recrutement -"we are hiring" -jobs';
+
+/** Intitulés de direction exclus de la recherche quand la mission n'en est pas une (profils surdimensionnés). */
+export const OVERSIZED_EXCLUSIONS = '-directeur -director -"head of" -CTO -DSI -VP';
+const join2 = (...p: string[]) => p.filter(Boolean).join(" ");
 
 const uniq = (xs: string[]) => {
   const seen = new Set<string>();
@@ -83,9 +87,14 @@ export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number)
   const locPart = loc ? quote(loc) : "";
   // Mission en France : profils LinkedIn français (fr.linkedin.com), pour ne pas remonter des profils du monde entier.
   const LI = !f.localisation || FR_MARKET.test(f.localisation) ? "fr.linkedin.com/in" : "linkedin.com/in";
-  const join = (...parts: string[]) => parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  // Profils surdimensionnés exclus dès la recherche (directeurs, head of…), sauf si la mission en est une.
+  const directionMission = /directeur|directrice|director|head of|chief|\bvp\b|\bdsi\b|\bcto\b/i.test(f.intitule);
+  const EXCL = join2(EXCLUSIONS, directionMission ? "" : OVERSIZED_EXCLUSIONS);
+  const join = (...parts: string[]) => parts.map((x) => (x === EXCLUSIONS ? EXCL : x)).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   const q: SearchQuery[] = [];
   if (round === 1) {
+    // X-ray le plus précis : l'intitulé dans le titre de la page LinkedIn (« Nom - Intitulé - Entreprise | LinkedIn »).
+    q.push({ label: "titre exact", domain: LI, boolean: join(`intitle:${orGroup(titles.slice(0, 3))}`, must[0] ? quote(must[0]) : "", locPart, EXCLUSIONS) });
     q.push({ label: "strict", domain: LI, boolean: join(orGroup(titles), ...must.map(quote), locPart, EXCLUSIONS) });
     if (must.length > 2) q.push({ label: "moyen", domain: LI, boolean: join(orGroup(titles), ...must.slice(0, 2).map(quote), locPart, EXCLUSIONS) });
     q.push({ label: "freelance", domain: LI, boolean: join(orGroup(titles), must[0] ? quote(must[0]) : "", '(freelance OR "consultant indépendant" OR indépendant)', locPart, EXCLUSIONS) });
@@ -177,7 +186,7 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
   const brief = {
     intitule: f.intitule,
     competences_souhaitees: f.competences_souhaitees,
-    seniorite_min_annees: f.seniorite_min_annees,
+    experience_cible: experienceRange(f),
     secteur: f.secteur,
     langues: f.langues,
     soft_skills: f.soft_skills,
@@ -190,6 +199,7 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
     system: `Tu notes l'adéquation de profils à une mission, de 0 à 100 par critère, sans complaisance.
 Une information absente du profil vaut 50 (inconnu), pas 0.
 Un profil qui correspond à un des « profils_exclus » de la mission : toutes ses notes à 15 au plus.
+« seniorite » : 100 dans la fourchette « experience_cible », en baisse forte au-dessus (profil surdimensionné : poste de direction, expérience trop longue) comme en dessous.
 Réponds uniquement en JSON : { "scores": [{ "index": 0, "competences_souhaitees": 0, "seniorite": 0, "secteur": 0, "langues": 0, "soft_skills": 0 }] }`,
     prompt: `Mission : ${JSON.stringify(brief)}${learned ? `\n\nProfils déjà écartés par le recruteur sur cette mission (note plus bas les profils semblables, pour le même motif) :\n${learned}` : ""}\n\nProfils :\n${profiles
       .map((p, i) => `[${i}] ${JSON.stringify({ intitule: p.intitule, competences: p.competences, annees_experience: p.annees_experience, secteurs: p.secteurs, langues: p.langues, resume: p.resume?.slice(0, 400) })}`)
@@ -301,6 +311,31 @@ export async function sourceRound(env: Env, missionId: string, f: Fiche, round: 
     }
     await journal(env, "sourcing", "recherche", { tour: round, type: q.label, requete: q.boolean, site: q.domain, moteur: engine, resultats: hits.length, pages_profil: fresh.length, profils: profiles.length }, { mission: missionId });
   }
+  return found;
+}
+
+/** Requêtes d'un tour pas encore lancées pour la mission (le sourcing continu avance dans la liste). */
+export async function plannedQueries(env: Env, missionId: string, f: Fiche, round: SourcingRound, maxQueries: number): Promise<SearchQuery[]> {
+  const { results: past } = await env.DB.prepare("SELECT detail FROM journal WHERE mission_id = ? AND action = 'recherche'").bind(missionId).all<{ detail: string | null }>();
+  const used = new Set((past ?? []).map((r) => parseJson<{ requete?: string; site?: string }>(r.detail, {})).map((d) => `${d.site ?? ""}|${d.requete ?? ""}`));
+  return buildBooleanQueries(f, round, 50).filter((q) => !used.has(`${q.domain}|${q.boolean}`)).slice(0, maxQueries);
+}
+
+/**
+ * Une seule requête : recherche, extraction, CV-thèque. Unité de travail courte (une étape de Workflow),
+ * pour rester sous la limite de 50 appels sortants par exécution de l'offre gratuite.
+ */
+export async function sourceOneQuery(env: Env, missionId: string, round: SourcingRound, q: SearchQuery): Promise<{ candidateId: string; profile: SourcedProfile }[]> {
+  const found: { candidateId: string; profile: SourcedProfile }[] = [];
+  const { engine, hits } = await webSearch(env, q, missionId);
+  const fresh = hits.filter((h) => isProfileUrl(h.url, q.domain));
+  const profiles = await extractProfiles(env, fresh, missionId);
+  for (const p of profiles) {
+    if (await isOptedOut(env, p.email ?? null, p.linkedin_url ?? null)) continue;
+    const id = await upsertCandidate(env, p);
+    if (!found.some((x) => x.candidateId === id)) found.push({ candidateId: id, profile: p });
+  }
+  await journal(env, "sourcing", "recherche", { tour: round, type: q.label, requete: q.boolean, site: q.domain, moteur: engine, resultats: hits.length, pages_profil: fresh.length, profils: profiles.length }, { mission: missionId });
   return found;
 }
 

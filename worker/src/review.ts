@@ -1,10 +1,10 @@
 import { ai } from "./ai/router";
 import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
 import type { Env } from "./env";
-import { type Fiche, readFiche } from "./fiche";
+import { experienceBounds, type Fiche, readFiche } from "./fiche";
 import { findMissingEmails } from "./hunter";
 import { reevaluatePool } from "./pool";
-import { stabilityOf } from "./talent";
+import { careerYears, stabilityOf } from "./talent";
 import { displayLocation, hasSkill, isLanguage, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
@@ -47,8 +47,11 @@ export function cardText(f: Fiche, r: CardRow, rank: number, total: number): str
   const covered = must.filter((s) => hasSkill(profileTerms(p), s));
   const strengths: string[] = [];
   if (covered.length) strengths.push(`${covered.join(", ")} (${covered.length}/${must.length} obligatoires)`);
-  if (typeof p.annees_experience === "number") strengths.push(`${p.annees_experience} ans d'expérience`);
-  else if (p.secteurs?.length) strengths.push(`secteur ${p.secteurs.slice(0, 2).join(", ")}`);
+  if (p.secteurs?.length) strengths.push(`secteur ${p.secteurs.slice(0, 2).join(", ")}`);
+  const years = careerYears(p);
+  const { min, max } = experienceBounds(f);
+  const target = min != null || max != null ? ` (cible ${min ?? 0}–${max ?? "∞"} ans)` : "";
+  const xp = years == null ? `🎯 expérience : inconnue${target}, à vérifier` : `🎯 ${years} ans d'expérience${target}${max != null && years > max ? " ⚠️ au-dessus" : min != null && years < min ? " ⚠️ en dessous" : ""}`;
   const where = [p.intitule, p.entreprise ? `chez ${p.entreprise}` : ""].filter(Boolean).join(" · ");
   const lieu = displayLocation(p.localisation, r.source_url ?? r.linkedin_url);
   const link = r.linkedin_url || r.source_url;
@@ -56,6 +59,7 @@ export function cardText(f: Fiche, r: CardRow, rank: number, total: number): str
     `👤 ${rank}/${total} · ${r.full_name ?? "Profil"} — ${r.score ?? "?"}/100`,
     where,
     `📍 ${lieu}`,
+    xp,
     strengths.length ? `✅ ${strengths.slice(0, 2).join(" · ")}` : "",
     stabilityOf(p).label ? `🏢 ${stabilityOf(p).label}` : "",
     detail.a_verifier?.length ? `⚠️ ${detail.a_verifier.join(" ; ")}` : "",

@@ -1,5 +1,5 @@
 import type { Fiche } from "./fiche";
-import { stabilityOf } from "./talent";
+import { careerYears, stabilityOf } from "./talent";
 
 /**
  * Matrice de matching : critères éliminatoires vérifiés par le code (jamais par l'IA seule),
@@ -79,6 +79,23 @@ export function displayLocation(profileLoc?: string | null, profileUrl?: string 
   if (profileLoc?.trim()) return profileLoc.trim();
   const c = countryFromUrl(profileUrl);
   return c === "fr" ? "France (profil LinkedIn français)" : c ? `étranger (${c.toUpperCase()})` : "inconnu, à vérifier";
+}
+
+const DIRECTION = /\b(directeur|directrice|director|head of|vp|vice pr[ée]sident|chief|cto|cio|dsi|cdo|coo|ceo|partner|associe|associee|country manager|general manager)\b/;
+
+/** Intitulé de direction (ex. « Directeur de projet », « Head of HRIS »), quand la mission n'en est pas un. */
+export function directionTitle(missionTitle: string, profileTitle?: string | null): boolean {
+  return !!profileTitle && DIRECTION.test(norm(profileTitle)) && !DIRECTION.test(norm(missionTitle));
+}
+
+/** Motif « surdimensionné », ou null. Tolérance d'un an sur un maximum explicite, deux sur le maximum par défaut (minimum + 5). */
+export function oversized(f: Fiche, p: Profile): string | null {
+  const explicit = f.seniorite_max_annees;
+  const max = explicit ?? (f.seniorite_min_annees != null ? f.seniorite_min_annees + 5 : null);
+  const years = careerYears(p);
+  if (max != null && years != null && years > max + (explicit != null ? 1 : 2)) return `surdimensionné : ${years} ans d'expérience (maximum ${max})`;
+  if (directionTitle(f.intitule, p.intitule)) return `surdimensionné : poste de direction (${p.intitule})`;
+  return null;
 }
 
 export interface SubScores {
@@ -166,7 +183,11 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
 
   // Séniorité : éliminatoire sous le niveau élargi (marge de 2 ans), sinon pondérée.
   const minYears = f.niveau_elargi.seniorite_min_annees ?? (f.seniorite_min_annees != null ? Math.max(0, f.seniorite_min_annees - 2) : null);
-  if (minYears != null && typeof p.annees_experience === "number" && p.annees_experience < minYears) reasons.push(`${p.annees_experience} ans d'expérience (minimum ${minYears})`);
+  const years = careerYears(p);
+  if (minYears != null && years != null && years < minYears) reasons.push(`${years} ans d'expérience (minimum ${minYears})`);
+  // Surdimensionné : trop d'expérience pour le poste, ou poste de direction pour une mission qui n'en est pas une.
+  const over = oversized(f, p);
+  if (over) reasons.push(over);
 
   // Score pondéré : sous-scores de l'IA bornés, couverture des obligatoires calculée par le code.
   const clamp = (n: unknown) => (typeof n === "number" && Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 50);

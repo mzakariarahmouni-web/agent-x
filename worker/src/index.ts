@@ -6,7 +6,7 @@ import type { Env } from "./env";
 import { handleLinkedin } from "./linkedin-api";
 import { ensureSchema } from "./migrate";
 
-export { MissionWorkflow, SchedulerWorkflow } from "./workflow";
+export { EvolutionWorkflow, MissionWorkflow, SchedulerWorkflow } from "./workflow";
 
 const text = (t: string, status = 200) => new Response(t, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 

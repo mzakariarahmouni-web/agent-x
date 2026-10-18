@@ -20,6 +20,8 @@ export interface Fiche {
   statuts_acceptes: string[];
   budget: { tjm_min: number | null; tjm_max: number | null; salaire_min: number | null; salaire_max: number | null };
   seniorite_min_annees: number | null;
+  /** Expérience maximum : au-delà, le profil est surdimensionné pour le poste (coût, intérêt, turnover). */
+  seniorite_max_annees: number | null;
   competences_obligatoires: string[];
   competences_souhaitees: string[];
   langues: string[];
@@ -65,6 +67,7 @@ Règles :
 - « exigences » : exigences incluses hors compétences (habilitation, déplacements, astreintes, secteur imposé…).
 - « profils_exclus » : profils que le client ne veut pas, explicites ou évidents d'après la fiche (ex. « profil junior », « profil uniquement développeur »).
 - « localisation » : ville ou région du poste ; « langues » : avec le niveau si indiqué (ex. « Anglais B2 »).
+- « seniorite_min_annees » et « seniorite_max_annees » : fourchette d'expérience (« entre 7 et 9 ans » = 7 et 9 ; « 5 ans minimum » = 5 et null). Un maximum explicite (« pas plus de », « maximum », « entre … et … ») doit être repris.
 - Si TJM et salaire sont absents, ou la localisation absente, ou l'expérience absente : pose la question correspondante dans « questions_clarification ».
 - Montants en euros, nombres sans unité ; null si inconnu.
 Réponds uniquement en JSON.`;
@@ -73,7 +76,7 @@ const SHAPE = `{
  "intitule": "", "client": "", "secteur": "", "contexte": "", "missions": [""], "localisation": "", "teletravail": "",
  "date_debut": "", "duree": "", "statuts_acceptes": ["freelance" | "salarie" | "portage"],
  "budget": { "tjm_min": null, "tjm_max": null, "salaire_min": null, "salaire_max": null },
- "seniorite_min_annees": null, "competences_obligatoires": [""], "competences_souhaitees": [""], "langues": [""], "soft_skills": [""],
+ "seniorite_min_annees": null, "seniorite_max_annees": null, "competences_obligatoires": [""], "competences_souhaitees": [""], "langues": [""], "soft_skills": [""],
  "exigences": [""], "profils_exclus": [""],
  "eliminatoires": [{ "critere": "", "type": "competence|disponibilite|localisation|langue|statut|tjm|seniorite|autre", "valeur": "" }],
  "mots_cles": [""], "synonymes": [""],
@@ -103,7 +106,9 @@ function requiredQuestions(raw: Partial<Fiche>, asked: string[]): string[] {
   const out = [...asked];
   if (!b.tjm_max && !b.tjm_min && !b.salaire_max && !b.salaire_min && !has(/tjm|salaire|budget|r[ée]mun[ée]ration/i)) out.unshift("Quel est le TJM ou le salaire brut annuel proposé ?");
   if (!String(raw.localisation ?? "").trim() && !has(/lieu|localisation|ville|r[ée]gion/i)) out.unshift("Où se situe le poste (ville ou région) ?");
-  if (raw.seniorite_min_annees == null && !has(/exp[ée]rience|ann[ée]es/i)) out.push("Combien d'années d'expérience minimum ?");
+  if (raw.seniorite_min_annees == null && !has(/exp[ée]rience|ann[ée]es/i)) out.push("Quelle fourchette d'expérience (minimum et maximum, en années) ?");
+  else if (raw.seniorite_min_annees != null && raw.seniorite_max_annees == null && !has(/maximum|max\b|surdimension/i))
+    out.push(`Expérience maximum ? (au-delà, les profils sont jugés surdimensionnés ; sans réponse : ${Number(raw.seniorite_min_annees) + 5} ans)`);
   return [...new Set(out)];
 }
 
@@ -126,6 +131,11 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     statuts_acceptes: arr(raw.statuts_acceptes).map((s) => s.toLowerCase()),
     budget: { tjm_min: num(b.tjm_min), tjm_max: num(b.tjm_max), salaire_min: num(b.salaire_min), salaire_max: num(b.salaire_max) },
     seniorite_min_annees: num(raw.seniorite_min_annees),
+    seniorite_max_annees: (() => {
+      const mx = num(raw.seniorite_max_annees);
+      const mn = num(raw.seniorite_min_annees);
+      return mx != null && (mn == null || mx >= mn) ? mx : null;
+    })(),
     competences_obligatoires: arr(raw.competences_obligatoires).map(cleanTerm).filter(Boolean),
     competences_souhaitees: arr(raw.competences_souhaitees).map(cleanTerm).filter(Boolean),
     langues: arr(raw.langues),
@@ -206,6 +216,20 @@ Réponds uniquement en JSON : { "questions": [{ "id": "b2_1", "bloc": 2, "texte"
   return ordered.slice(0, 10);
 }
 
+/** Fourchette d'expérience ciblée ; sans maximum explicite, minimum + 5 ans (au-delà : surdimensionné). */
+export function experienceBounds(f: Fiche): { min: number | null; max: number | null; maxExplicit: boolean } {
+  const min = f.seniorite_min_annees;
+  const max = f.seniorite_max_annees ?? (min != null ? min + 5 : null);
+  return { min, max, maxExplicit: f.seniorite_max_annees != null };
+}
+
+export function experienceRange(f: Fiche): string | null {
+  const { min, max, maxExplicit } = experienceBounds(f);
+  if (min == null && max == null) return null;
+  if (min != null && max != null) return `${min} à ${max} ans${maxExplicit ? "" : " (maximum par défaut, modifiable)"}`;
+  return max != null ? `${max} ans maximum` : `${min} ans minimum`;
+}
+
 /** Rémunération lisible : TJM et/ou salaire, « à préciser » si rien. */
 export function remuneration(f: Fiche): string {
   const b = f.budget;
@@ -221,7 +245,7 @@ export function ficheSummary(f: Fiche): string {
     `📋 ${f.intitule}${f.client ? ` — ${f.client}` : ""}`,
     `💶 Rémunération : ${remuneration(f)}`,
     `📍 Localisation : ${f.localisation ? `${f.localisation}${f.teletravail ? ` · ${f.teletravail}` : ""}` : todo}`,
-    `🎯 Expérience : ${f.seniorite_min_annees != null ? `${f.seniorite_min_annees} ans minimum` : todo}`,
+    `🎯 Expérience : ${experienceRange(f) ?? todo}`,
     `🗣 Langues : ${f.langues.join(", ") || "—"}`,
     `✅ Exigences incluses : ${[...f.competences_obligatoires, ...f.exigences].join(", ") || "—"}`,
     `⛔ Profils exclus : ${f.profils_exclus.join(" ; ") || "—"}`,
