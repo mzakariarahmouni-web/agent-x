@@ -1,8 +1,8 @@
 import type { ChatFile } from "./ai/providers";
 import { generateCv } from "./cv";
-import { getConfig, getSetting, journal, nowIso, parseJson } from "./db";
+import { getConfig, getSetting, journal, nowIso, parseJson, setSetting } from "./db";
 import type { Env } from "./env";
-import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, readFiche } from "./fiche";
+import { buildFiche, buildQuestionnaire, type Fiche, ficheSummary, parseSender, readFiche } from "./fiche";
 import { decide, rateAnswers } from "./qualification";
 import { eliminationSummary } from "./pool";
 import { sendReviewCards } from "./review";
@@ -94,12 +94,18 @@ export async function sendFicheValidation(env: Env, id: string, reminder = 0): P
   await notify(env, text, validationButtons(vid, { ok: "✅ Valider et lancer", mod: "✏️ Modifier", no: "🗑 Abandonner" }));
 }
 
+/** Signature de la mission ; devient aussi la signature par défaut si aucune n'est encore enregistrée. */
+export async function setMissionSender(env: Env, id: string, sender: string): Promise<void> {
+  await env.DB.prepare("UPDATE missions SET sender_name = ? WHERE id = ?").bind(sender, id).run();
+  if (!(await getSetting(env, "sender_default"))) await setSetting(env, "sender_default", sender);
+  await journal(env, "recruteur", "signature", { signature: sender }, { mission: id });
+}
+
 /** Modification demandée à la validation n°1 (texte libre du recruteur). */
 export async function applyFicheChange(env: Env, id: string, instruction: string): Promise<void> {
   const m = await getMission(env, id);
-  const sender = /^\s*exp[ée]diteur\s*:\s*(.+)$/im.exec(instruction);
-  if (sender) await env.DB.prepare("UPDATE missions SET sender_name = ? WHERE id = ?").bind(sender[1].trim().slice(0, 80), id).run();
-  const rest = instruction.replace(/^\s*exp[ée]diteur\s*:.*$/im, "").trim();
+  const { sender, rest } = parseSender(instruction);
+  if (sender) await setMissionSender(env, id, sender);
   if (!rest) return;
   const prev = readFiche(m.fiche);
   const removeQ = /retire(?:r)? la question (\d+)/i.exec(rest);

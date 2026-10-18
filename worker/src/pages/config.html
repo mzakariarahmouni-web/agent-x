@@ -66,6 +66,8 @@ const KEYS = [
   { key: "gemini_api_key", label: "Gemini (Google AI Studio)", help: "Gratuit · aistudio.google.com → Get API key", url: "https://aistudio.google.com/app/apikey", need: true },
   { key: "groq_api_key", label: "Groq", help: "Gratuit · relais automatique", url: "https://console.groq.com/keys", need: true },
   { key: "tavily_api_key", label: "Tavily (recherche web)", help: "Gratuit : 1 000 recherches par mois", url: "https://app.tavily.com", need: true },
+  { key: "serper_api_key", label: "Serper — recherche X-ray Google (recommandé)", help: "Gratuit : 2 500 recherches offertes, sans carte ; Agent X en utilise 600 par mois au plus", url: "https://serper.dev/api-keys" },
+  { key: "serpapi_api_key", label: "SerpApi — X-ray Google (relais)", help: "Gratuit : 250 recherches par mois, sans carte", url: "https://serpapi.com/manage-api-key" },
   { key: "brave_api_key", label: "Brave Search (2e moteur, en parallèle)", help: "5 $ de crédit par mois (≈ 1 000 recherches), carte demandée ; Agent X s'arrête à 900 par mois", url: "https://api-dashboard.search.brave.com" },
   { key: "exa_api_key", label: "Exa (3e moteur, en parallèle)", help: "Crédit gratuit mensuel ; Agent X s'arrête à 900 recherches par mois", url: "https://dashboard.exa.ai/api-keys" },
   { key: "hunter_api_key", label: "Hunter (emails professionnels, option)", help: "Gratuit : 25 recherches par mois, seulement pour les profils Go sans email", url: "https://hunter.io/api-keys" },
@@ -90,7 +92,7 @@ async function load() {
     <div class="checks">
       ${chk(c.gemini_api_key || c.groq_api_key || s.workers_ai, "IA (Gemini, Groq ou Workers AI)")}
       ${chk(c.gemini_api_key, "Gemini (cerveau principal)", true)}
-      ${chk(c.tavily_api_key || c.brave_api_key || c.exa_api_key, "Recherche web")}
+      ${chk(c.tavily_api_key || c.brave_api_key || c.exa_api_key || c.serper_api_key || c.serpapi_api_key, "Recherche web")}
       ${chk(s.telegram.linked, "Telegram relié")}
       ${chk(!!s.mailbox, s.mailbox ? "Email : " + (s.mailbox === "gmail" ? s.gmail : s.outlook) : "Email (Gmail ou Outlook)", true)}
       ${chk(s.workers_ai, "Workers AI (volume)", true)}

@@ -180,6 +180,7 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
     secteur: f.secteur,
     langues: f.langues,
     soft_skills: f.soft_skills,
+    profils_exclus: f.profils_exclus,
   };
   const { data } = await ai<{ scores: (Partial<SubScores> & { index: number })[] }>(env, {
     family: "volume",
@@ -187,6 +188,7 @@ export async function subScores(env: Env, f: Fiche, profiles: Profile[], mission
     missionId,
     system: `Tu notes l'adéquation de profils à une mission, de 0 à 100 par critère, sans complaisance.
 Une information absente du profil vaut 50 (inconnu), pas 0.
+Un profil qui correspond à un des « profils_exclus » de la mission : toutes ses notes à 15 au plus.
 Réponds uniquement en JSON : { "scores": [{ "index": 0, "competences_souhaitees": 0, "seniorite": 0, "secteur": 0, "langues": 0, "soft_skills": 0 }] }`,
     prompt: `Mission : ${JSON.stringify(brief)}${learned ? `\n\nProfils déjà écartés par le recruteur sur cette mission (note plus bas les profils semblables, pour le même motif) :\n${learned}` : ""}\n\nProfils :\n${profiles
       .map((p, i) => `[${i}] ${JSON.stringify({ intitule: p.intitule, competences: p.competences, annees_experience: p.annees_experience, secteurs: p.secteurs, langues: p.langues, resume: p.resume?.slice(0, 400) })}`)

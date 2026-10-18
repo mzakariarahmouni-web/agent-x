@@ -4,7 +4,7 @@ import type { Env } from "./env";
 import { type Fiche, readFiche } from "./fiche";
 import { findMissingEmails } from "./hunter";
 import { reevaluatePool } from "./pool";
-import { hasSkill, isLanguage, profileTerms } from "./matching";
+import { displayLocation, hasSkill, isLanguage, profileTerms } from "./matching";
 import { mailReady } from "./mail";
 import { nextSlot, type ScheduleConfig } from "./schedule";
 import type { SourcedProfile } from "./sourcing";
@@ -48,11 +48,13 @@ export function cardText(f: Fiche, r: CardRow, rank: number, total: number): str
   if (covered.length) strengths.push(`${covered.join(", ")} (${covered.length}/${must.length} obligatoires)`);
   if (typeof p.annees_experience === "number") strengths.push(`${p.annees_experience} ans d'expérience`);
   else if (p.secteurs?.length) strengths.push(`secteur ${p.secteurs.slice(0, 2).join(", ")}`);
-  const where = [p.intitule, p.entreprise ? `chez ${p.entreprise}` : "", p.localisation].filter(Boolean).join(" · ");
+  const where = [p.intitule, p.entreprise ? `chez ${p.entreprise}` : ""].filter(Boolean).join(" · ");
+  const lieu = displayLocation(p.localisation, r.source_url ?? r.linkedin_url);
   const link = r.linkedin_url || r.source_url;
   return [
     `👤 ${rank}/${total} · ${r.full_name ?? "Profil"} — ${r.score ?? "?"}/100`,
     where,
+    `📍 ${lieu}`,
     strengths.length ? `✅ ${strengths.slice(0, 2).join(" · ")}` : "",
     detail.a_verifier?.length ? `⚠️ ${detail.a_verifier.join(" ; ")}` : "",
     `📍 Source : ${link ? new URL(link).hostname.replace(/^www\./, "") : r.source} · ✉️ email : ${r.email ? "oui" : "non"}`,
@@ -228,7 +230,7 @@ export async function draftModel(env: Env, f: Fiche, sender: string, instruction
     system: `Tu écris le message type de premier contact d'un recruteur à des consultants, en français, vouvoiement, sans emoji ni jargon.
 Il sera personnalisé automatiquement : garde exactement les variables {prenom} (prénom du candidat) et {accroche} (une phrase sur son parcours, ajoutée par profil).
 Structure : « Bonjour {prenom}, » ; {accroche} ; la mission en une ou deux phrases (secteur, durée, lieu ou télétravail) ; une question simple pour répondre.
-350 caractères au maximum hors variables. Pas de lien ni de signature (ajoutés ensuite). « objet » : 6 mots au maximum.
+350 caractères au maximum hors variables. Pas de lien, pas de signature, pas de présentation de l'expéditeur (« Je suis… ») : tout cela est ajouté ensuite. « objet » : 6 mots au maximum.
 Réponds uniquement en JSON : { "objet": "", "modele": "" }`,
     prompt: previous
       ? `Modèle actuel : ${JSON.stringify(previous)}\nModification demandée par le recruteur : « ${instruction} »\nRenvoie le modèle complet modifié.`

@@ -24,6 +24,10 @@ export interface Fiche {
   competences_souhaitees: string[];
   langues: string[];
   soft_skills: string[];
+  /** Exigences incluses : ce que le profil doit avoir ou accepter (hors compétences : habilitation, déplacements, astreintes…). */
+  exigences: string[];
+  /** Profils exclus : ce que le client ne veut pas (junior, profil 100 % technique, sortie d'ESN concurrente…). */
+  profils_exclus: string[];
   eliminatoires: { critere: string; type: CritereType; valeur: string }[];
   mots_cles: string[];
   synonymes: string[];
@@ -57,6 +61,11 @@ Règles :
 - « niveau_exigeant » : les critères qu'un client exigeant durcira probablement (anticipation).
 - « questions_clarification » : 3 au maximum, seulement si une information manque vraiment (TJM, date, télétravail…).
 - « mots_cles » : termes exacts de la fiche, utiles à un ATS (10 à 25).
+- « budget » : TJM (freelance) et/ou salaire brut annuel en euros (salarié), tels qu'écrits ; null si absent.
+- « exigences » : exigences incluses hors compétences (habilitation, déplacements, astreintes, secteur imposé…).
+- « profils_exclus » : profils que le client ne veut pas, explicites ou évidents d'après la fiche (ex. « profil junior », « profil uniquement développeur »).
+- « localisation » : ville ou région du poste ; « langues » : avec le niveau si indiqué (ex. « Anglais B2 »).
+- Si TJM et salaire sont absents, ou la localisation absente, ou l'expérience absente : pose la question correspondante dans « questions_clarification ».
 - Montants en euros, nombres sans unité ; null si inconnu.
 Réponds uniquement en JSON.`;
 
@@ -65,6 +74,7 @@ const SHAPE = `{
  "date_debut": "", "duree": "", "statuts_acceptes": ["freelance" | "salarie" | "portage"],
  "budget": { "tjm_min": null, "tjm_max": null, "salaire_min": null, "salaire_max": null },
  "seniorite_min_annees": null, "competences_obligatoires": [""], "competences_souhaitees": [""], "langues": [""], "soft_skills": [""],
+ "exigences": [""], "profils_exclus": [""],
  "eliminatoires": [{ "critere": "", "type": "competence|disponibilite|localisation|langue|statut|tjm|seniorite|autre", "valeur": "" }],
  "mots_cles": [""], "synonymes": [""],
  "niveau_elargi": { "intitules_proches": [""], "competences_adjacentes": [""], "seniorite_min_annees": null },
@@ -84,6 +94,17 @@ export function validateFiche(f: Partial<Fiche>): string | null {
   if (!Array.isArray(f.mots_cles) || f.mots_cles.length < 3) return "mots-clés insuffisants";
   if (!Array.isArray(f.eliminatoires)) return "critères éliminatoires manquants";
   return null;
+}
+
+/** Les rubriques indispensables absentes donnent toujours lieu à une question au recruteur. */
+function requiredQuestions(raw: Partial<Fiche>, asked: string[]): string[] {
+  const b = (raw.budget ?? {}) as Partial<Fiche["budget"]>;
+  const has = (re: RegExp) => asked.some((q) => re.test(q));
+  const out = [...asked];
+  if (!b.tjm_max && !b.tjm_min && !b.salaire_max && !b.salaire_min && !has(/tjm|salaire|budget|r[ée]mun[ée]ration/i)) out.unshift("Quel est le TJM ou le salaire brut annuel proposé ?");
+  if (!String(raw.localisation ?? "").trim() && !has(/lieu|localisation|ville|r[ée]gion/i)) out.unshift("Où se situe le poste (ville ou région) ?");
+  if (raw.seniorite_min_annees == null && !has(/exp[ée]rience|ann[ée]es/i)) out.push("Combien d'années d'expérience minimum ?");
+  return [...new Set(out)];
 }
 
 /** Complète les champs absents pour que le reste du code n'ait jamais de « undefined ». */
@@ -109,6 +130,8 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     competences_souhaitees: arr(raw.competences_souhaitees).map(cleanTerm).filter(Boolean),
     langues: arr(raw.langues),
     soft_skills: arr(raw.soft_skills),
+    exigences: arr(raw.exigences),
+    profils_exclus: arr(raw.profils_exclus),
     eliminatoires: Array.isArray(raw.eliminatoires)
       ? raw.eliminatoires.filter((e) => e && e.critere).map((e) => ({ critere: String(e.critere), type: (e.type ?? "autre") as CritereType, valeur: String(e.valeur ?? "") }))
       : [],
@@ -116,7 +139,7 @@ export function normalizeFiche(raw: Partial<Fiche>, maxQuestions = 3): Fiche {
     synonymes: arr(raw.synonymes),
     niveau_elargi: { intitules_proches: arr(el.intitules_proches), competences_adjacentes: arr(el.competences_adjacentes), seniorite_min_annees: num(el.seniorite_min_annees) },
     niveau_exigeant: { criteres_durcis: arr(raw.niveau_exigeant?.criteres_durcis) },
-    questions_clarification: arr(raw.questions_clarification).slice(0, maxQuestions),
+    questions_clarification: requiredQuestions(raw, arr(raw.questions_clarification)).slice(0, maxQuestions + 1),
     hypotheses: arr(raw.hypotheses),
     questionnaire: Array.isArray(raw.questionnaire) ? raw.questionnaire : [],
   };
@@ -183,13 +206,26 @@ Réponds uniquement en JSON : { "questions": [{ "id": "b2_1", "bloc": 2, "texte"
   return ordered.slice(0, 10);
 }
 
+/** Rémunération lisible : TJM et/ou salaire, « à préciser » si rien. */
+export function remuneration(f: Fiche): string {
+  const b = f.budget;
+  const range = (min: number | null, max: number | null, unit: string) => (min && max ? `${min} à ${max} ${unit}` : max ? `jusqu'à ${max} ${unit}` : min ? `à partir de ${min} ${unit}` : "");
+  const tjm = range(b.tjm_min, b.tjm_max, "€ / jour");
+  const sal = range(b.salaire_min, b.salaire_max, "€ brut / an");
+  return [tjm && `TJM ${tjm}`, sal && `salaire ${sal}`].filter(Boolean).join(" · ") || "⚠️ à préciser";
+}
+
 export function ficheSummary(f: Fiche): string {
+  const todo = "⚠️ à préciser";
   const lines = [
     `📋 ${f.intitule}${f.client ? ` — ${f.client}` : ""}`,
-    f.localisation ? `📍 ${f.localisation}${f.teletravail ? ` · ${f.teletravail}` : ""}` : "",
+    `💶 Rémunération : ${remuneration(f)}`,
+    `📍 Localisation : ${f.localisation ? `${f.localisation}${f.teletravail ? ` · ${f.teletravail}` : ""}` : todo}`,
+    `🎯 Expérience : ${f.seniorite_min_annees != null ? `${f.seniorite_min_annees} ans minimum` : todo}`,
+    `🗣 Langues : ${f.langues.join(", ") || "—"}`,
+    `✅ Exigences incluses : ${[...f.competences_obligatoires, ...f.exigences].join(", ") || "—"}`,
+    `⛔ Profils exclus : ${f.profils_exclus.join(" ; ") || "—"}`,
     f.date_debut || f.duree ? `🗓 ${[f.date_debut && `début ${f.date_debut}`, f.duree].filter(Boolean).join(" · ")}` : "",
-    f.budget.tjm_max ? `💶 TJM ${f.budget.tjm_min ? `${f.budget.tjm_min}–` : "≤ "}${f.budget.tjm_max} €` : "",
-    f.seniorite_min_annees ? `🎯 ${f.seniorite_min_annees} ans d'expérience minimum` : "",
     "",
     `Obligatoire : ${f.competences_obligatoires.join(", ") || "—"}`,
     `Souhaité : ${f.competences_souhaitees.join(", ") || "—"}`,
@@ -199,6 +235,19 @@ export function ficheSummary(f: Fiche): string {
     f.hypotheses.length ? `\nHypothèses : ${f.hypotheses.join(" ; ")}` : "",
   ];
   return lines.filter((l) => l !== "").join("\n");
+}
+
+/**
+ * Repère une signature « expéditeur : Prénom Nom, Cabinet » n'importe où dans une consigne du recruteur
+ * (guillemets « » " ' acceptés, mots « signature » ou « signé » aussi) ; renvoie la signature et le reste de la consigne.
+ */
+export function parseSender(text: string): { sender: string | null; rest: string } {
+  const re = /[«"“']?\s*(?:exp[ée]diteur|signature|sign[ée](?:\s+par)?)\s*[:=]\s*([^«»"“”\n;]+?)\s*[»"”']?\s*(?:[;\n]|$)/i;
+  const m = re.exec(text);
+  if (!m) return { sender: null, rest: text.trim() };
+  const sender = m[1].replace(/\s+,/g, ",").replace(/\s{2,}/g, " ").trim().slice(0, 80);
+  const rest = (text.slice(0, m.index) + " " + text.slice(m.index + m[0].length)).replace(/^[\s«»"“”',.;:-]+|[\s«»"“”',;:-]+$/g, "").trim();
+  return { sender: sender || null, rest };
 }
 
 export const readFiche = (json: string | null | undefined) => normalizeFiche(parseJson<Partial<Fiche>>(json, {}));

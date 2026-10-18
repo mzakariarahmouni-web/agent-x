@@ -228,6 +228,9 @@ let lastHunter = null;
 let lastBrave = null;
 let lastExa = null;
 let braveMode = "ok";
+let lastSerper = null;
+let lastSerpapi = null;
+let serperMode = "ok";
 const tgSent = [];
 let existingWebhook = "";
 const fakeFetch = async (url, init = {}) => {
@@ -292,6 +295,20 @@ const fakeFetch = async (url, init = {}) => {
     calls.push("exa");
     lastExa = JSON.parse(init.body);
     return ok({ results: [{ title: "Sophie Martin - Ingénieure EDI | LinkedIn", url: "https://fr.linkedin.com/in/sophie-martin-edi", text: "EDI, EDIFACT, XSLT, Lyon" }] });
+  }
+  if (u.host === "google.serper.dev") {
+    calls.push("serper");
+    lastSerper = JSON.parse(init.body);
+    if (serperMode === "down") return new Response('{"message":"Not enough credits"}', { status: 400 });
+    return ok({ organic: [
+      { title: "Léa Roux - Consultante EDI - Paris | LinkedIn", link: "https://fr.linkedin.com/in/lea-roux-edi", snippet: "Paris · Consultante EDI chez Generix depuis 2019 · EDIFACT, AS2" },
+      { title: "Jean Dupont - Chef de projet AMOA | LinkedIn", link: "https://fr.linkedin.com/in/jean-dupont-amoa", snippet: "doublon" },
+    ] });
+  }
+  if (u.host === "serpapi.com") {
+    calls.push("serpapi");
+    lastSerpapi = Object.fromEntries(u.searchParams);
+    return ok({ organic_results: [{ title: "Marc Petit - Ingénieur EDI | LinkedIn", link: "https://fr.linkedin.com/in/marc-petit-edi", snippet: "Lyon · EDI" }] });
   }
   if (u.host === "api.hunter.io") {
     calls.push("hunter");
@@ -1035,7 +1052,7 @@ await test("recherche : Tavily, Brave et Exa interrogés en parallèle, résulta
   calls.length = 0;
   const r = await X.search.webSearch(e, q, "m_x");
   assert(["tavily", "brave", "exa"].every((c) => calls.includes(c)), calls.join());
-  assert(r.engine === "tavily+brave+exa", r.engine);
+  assert(r.engine.split("+").sort().join() === "brave,exa,tavily", r.engine);
   const urls = r.hits.map((h) => h.url);
   assert(urls.filter((u) => /jean-dupont-amoa/.test(u)).length === 1, "doublon Jean Dupont (fr. et www.)");
   assert(urls.some((u) => /karim-benali/.test(u)) && urls.some((u) => /sophie-martin/.test(u)), urls.join());
@@ -1044,7 +1061,56 @@ await test("recherche : Tavily, Brave et Exa interrogés en parallèle, résulta
   braveMode = "down";
   const r2 = await X.search.webSearch(e, q, "m_x");
   braveMode = "ok";
-  assert(r2.engine === "tavily+exa" && r2.hits.length >= 3, r2.engine);
+  assert(r2.engine.split("+").sort().join() === "exa,tavily" && r2.hits.length >= 3, r2.engine);
+});
+
+await test("X-ray Google : Serper reçoit la requête booléenne complète (site:, OR, -) ; SerpApi seulement en relais", async () => {
+  const e = await makeEnv();
+  await X.db.setSetting(e, "serper_api_key", "sk", true);
+  await X.db.setSetting(e, "serpapi_api_key", "sa", true);
+  const q = { boolean: '("Consultant EDI" OR "Ingénieur EDI") "EDIFACT" "Paris" -recrute', domain: "fr.linkedin.com/in" };
+  calls.length = 0;
+  const r = await X.search.webSearch(e, q, "m_x");
+  assert(calls.includes("serper") && !calls.includes("serpapi") && calls.includes("tavily"), calls.join());
+  assert(lastSerper.q === 'site:fr.linkedin.com/in ("Consultant EDI" OR "Ingénieur EDI") "EDIFACT" "Paris" -recrute' && lastSerper.gl === "fr", JSON.stringify(lastSerper));
+  assert(r.hits.filter((h) => /jean-dupont-amoa/.test(h.url)).length === 1 && r.hits.some((h) => /lea-roux/.test(h.url)), r.hits.map((h) => h.url).join());
+  serperMode = "down";
+  calls.length = 0;
+  const r2 = await X.search.webSearch(e, q, "m_x");
+  serperMode = "ok";
+  assert(calls.includes("serpapi") && r2.hits.some((h) => /marc-petit/.test(h.url)) && /site:fr\.linkedin\.com\/in/.test(lastSerpapi.q), calls.join());
+});
+
+await test("signature : « expéditeur : … » reconnue avec guillemets, espaces ou autre consigne autour", () => {
+  const p = X.fiche.parseSender;
+  let r = p("« expéditeur : David YAAKOV , Consurecrutement »");
+  assert(r.sender === "David YAAKOV, Consurecrutement" && r.rest === "", JSON.stringify(r));
+  r = p("plus court ; expéditeur : Zacharie R., Cabinet ZR");
+  assert(r.sender === "Zacharie R., Cabinet ZR" && r.rest === "plus court", JSON.stringify(r));
+  r = p("Signature: Jad Mathieu");
+  assert(r.sender === "Jad Mathieu", JSON.stringify(r));
+  assert(p("mentionne le télétravail").sender === null, "faux positif");
+});
+
+await test("localisation : le pays se lit dans l'adresse du profil (in.linkedin.com = Inde), même sans lieu renseigné", () => {
+  const m = X.matching;
+  assert(m.countryFromUrl("https://in.linkedin.com/in/niyati-goel") === "in" && m.countryFromUrl("https://www.linkedin.com/in/x") === null && m.countryFromUrl("https://uk.linkedin.com/in/x") === "gb", "pays");
+  assert(m.abroadLocation(null, "Paris", "https://in.linkedin.com/in/niyati-goel"), "Inde");
+  assert(!m.abroadLocation(null, "Paris", "https://fr.linkedin.com/in/pascal-petit"), "France");
+  assert(!m.abroadLocation("Greater Paris Metropolitan Region, France", "Paris", "https://cn.linkedin.com/in/x"), "lieu français prioritaire");
+  assert(m.displayLocation(null, "https://www.linkedin.com/in/x") === "inconnu, à vérifier", "inconnu");
+  const w = { competences_souhaitees: 30, seniorite: 25, secteur: 20, langues: 10, soft_skills: 15 };
+  const r = m.evaluate({ ...edi(), localisation: "Paris" }, { intitule: "EDI Consultant", competences: ["EDIFACT"], source_url: "https://in.linkedin.com/in/niyati-goel" }, {}, w);
+  assert(r.eliminated && /étranger \(IN\)/.test(r.reasons.join()), r.reasons.join());
+});
+
+await test("fiche de poste : rubriques toujours affichées (rémunération, lieu, expérience, langues, exigences, profils exclus), questions si absentes", () => {
+  const f = X.fiche.normalizeFiche({ intitule: "Consultant EDI", competences_obligatoires: ["EDIFACT"], mots_cles: ["EDI", "EDIFACT", "AS2"], eliminatoires: [], langues: ["Anglais B2"], profils_exclus: ["profil junior"], exigences: ["astreintes ponctuelles"] });
+  const s = X.fiche.ficheSummary(f);
+  for (const k of ["Rémunération : ⚠️ à préciser", "Localisation : ⚠️ à préciser", "Expérience : ⚠️ à préciser", "Langues : Anglais B2", "Exigences incluses : EDIFACT, astreintes ponctuelles", "Profils exclus : profil junior"]) assert(s.includes(k), `${k}\n${s}`);
+  assert(f.questions_clarification.some((q) => /TJM ou le salaire/.test(q)) && f.questions_clarification.some((q) => /Où se situe/.test(q)), f.questions_clarification.join(" | "));
+  const g = X.fiche.normalizeFiche({ ...f, budget: { salaire_min: 50000, salaire_max: 60000 }, localisation: "Paris", seniorite_min_annees: 5, questions_clarification: [] });
+  assert(X.fiche.remuneration(g) === "salaire 50000 à 60000 € brut / an" && !g.questions_clarification.length, X.fiche.remuneration(g));
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {

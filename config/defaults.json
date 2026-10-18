@@ -27,9 +27,9 @@
     "timeout_ms": 90000
   },
   "search": {
-    "chain": ["tavily", "brave", "exa"],
+    "chain": ["serper", "tavily", "exa", "serpapi", "brave"],
     "mode": "parallele",
-    "monthly_limits": { "tavily": 1000, "brave": 900, "exa": 900, "hunter": 25 },
+    "monthly_limits": { "tavily": 1000, "brave": 900, "exa": 900, "serper": 600, "serpapi": 240, "hunter": 25 },
     "queries_per_mission": 12,
     "results_per_query": 10
   },

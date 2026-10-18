@@ -20,6 +20,8 @@ export interface Profile {
   email?: string;
   linkedin_url?: string;
   resume?: string;
+  /** Page d'origine (le sous-domaine LinkedIn indique le pays : in.linkedin.com = Inde). */
+  source_url?: string;
 }
 
 /** Statut contractuel reconnu, sinon null (un intitulé de poste comme « Senior » n'est pas un statut). */
@@ -35,12 +37,42 @@ export function normStatut(s?: string | null): "freelance" | "salarie" | "portag
 const FR = /france|paris|ile de france|idf|lyon|marseille|lille|toulouse|nantes|bordeaux|rennes|strasbourg|nice|montpellier|grenoble|rouen|orleans|tours|dijon|reims|metz|nancy|clermont|caen|angers|le mans|brest|limoges|amiens|besancon|perpignan|toulon|la defense|courbevoie|puteaux|nanterre|boulogne|issy|saint denis|versailles|massy|hauts de seine|yvelines|essonne|val de marne|seine saint denis|val d oise|auvergne|rhone|occitanie|bretagne|normandie|nouvelle aquitaine|grand est|hauts de france|pays de la loire|centre val de loire|bourgogne|provence|cote d azur/;
 const ABROAD = /india|united states|usa|canada|united kingdom|england|london|china|germany|deutschland|spain|espana|italy|italia|portugal|netherlands|belgium|belgique|switzerland|suisse|morocco|maroc|tunisia|tunisie|algeria|algerie|senegal|cote d ivoire|cameroon|cameroun|brazil|mexico|australia|singapore|philippines|pakistan|bangladesh|egypt|nigeria|poland|romania|ukraine|russia|turkey|dubai|united arab emirates|qatar|saudi|japan|korea|vietnam|indonesia|malaysia|ireland|luxembourg|uttar pradesh|maharashtra|karnataka|tamil nadu|telangana|ontario|quebec|florida|california|texas|new york/;
 
+/**
+ * Pays déduit de l'adresse du profil : sous-domaine LinkedIn (fr., in., uk., cn.…) ou extension Malt (malt.fr, malt.es…).
+ * « fr » pour la France, un autre code pour l'étranger, null si l'adresse ne dit rien (www.linkedin.com).
+ */
+export function countryFromUrl(url?: string | null): string | null {
+  if (!url) return null;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  const li = /^([a-z]{2})\.linkedin\.com$/.exec(host);
+  if (li) return li[1] === "uk" ? "gb" : li[1];
+  const malt = /(?:^|\.)malt\.([a-z]{2})$/.exec(host);
+  if (malt) return malt[1];
+  return null;
+}
+
 /** Le profil est-il clairement basé hors de France alors que la mission est en France (ou sans lieu précisé) ? */
-export function abroadLocation(profileLoc?: string | null, missionLoc?: string | null): boolean {
+export function abroadLocation(profileLoc?: string | null, missionLoc?: string | null, profileUrl?: string | null): boolean {
   const m = norm(missionLoc ?? "");
   if (m && !FR.test(m) && !/remote|teletravail|full remote/.test(m)) return false;
   const p = norm(profileLoc ?? "");
-  return !!p && !FR.test(p) && ABROAD.test(p);
+  if (p && FR.test(p)) return false;
+  if (p && ABROAD.test(p)) return true;
+  // Lieu absent ou ambigu : l'adresse du profil tranche (in.linkedin.com, cn.linkedin.com…).
+  const c = countryFromUrl(profileUrl);
+  return !!c && c !== "fr";
+}
+
+/** Lieu affiché sur une carte : lieu du profil, sinon pays déduit de l'adresse, sinon « inconnu ». */
+export function displayLocation(profileLoc?: string | null, profileUrl?: string | null): string {
+  if (profileLoc?.trim()) return profileLoc.trim();
+  const c = countryFromUrl(profileUrl);
+  return c === "fr" ? "France (profil LinkedIn français)" : c ? `étranger (${c.toUpperCase()})` : "inconnu, à vérifier";
 }
 
 export interface SubScores {
@@ -123,8 +155,8 @@ export function evaluate(f: Fiche, p: Profile, sub: Partial<SubScores>, weights:
   if (statut && f.statuts_acceptes.length && !f.statuts_acceptes.map(normStatut).includes(statut)) reasons.push(`statut ${statut} non accepté`);
 
   // Lieu : un profil clairement basé hors de France est écarté quand la mission est en France (ou sans lieu précisé).
-  const abroad = abroadLocation(p.localisation, f.localisation);
-  if (abroad) reasons.push(`basé hors de France (${p.localisation})`);
+  const abroad = abroadLocation(p.localisation, f.localisation, p.source_url ?? p.linkedin_url);
+  if (abroad) reasons.push(`basé hors de France (${displayLocation(p.localisation, p.source_url ?? p.linkedin_url)})`);
 
   // Séniorité : éliminatoire sous le niveau élargi (marge de 2 ans), sinon pondérée.
   const minYears = f.niveau_elargi.seniorite_min_annees ?? (f.seniorite_min_annees != null ? Math.max(0, f.seniorite_min_annees - 2) : null);

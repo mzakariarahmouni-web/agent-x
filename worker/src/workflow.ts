@@ -12,6 +12,7 @@ import {
   markPresented,
   poolStats,
   progress,
+  setMissionSender,
   qualifyPending,
   reportSourcing,
   sendFicheValidation,
@@ -21,7 +22,7 @@ import {
   startMission,
 } from "./mission";
 import { applyMessage, type ChannelMode, closeReview, draftModel, type MessageModel, remindReview, sendMessageValidation, sendReviewCards } from "./review";
-import { readFiche } from "./fiche";
+import { parseSender, readFiche } from "./fiche";
 import { getSetting } from "./db";
 import { reevaluatePool } from "./pool";
 import { SearchUnavailable } from "./search";
@@ -101,21 +102,22 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
         return true;
       });
       const d = await this.waitDecision(step, `vmsg:${tag}#${round}`, "vmsg", (n) => sendMessageValidation(env, id, current, n), reminderHours);
-      const senderChange = d.action === "mod" ? /^\s*exp[ée]diteur\s*:\s*(.+)$/i.exec(d.text ?? "") : null;
-      if (senderChange) {
+      // Signature (« expéditeur : … », guillemets acceptés) : enregistrée, jamais insérée dans le texte du message.
+      const { sender, rest } = d.action === "mod" ? parseSender(d.text ?? "") : { sender: null, rest: "" };
+      if (sender) {
         await step.do(`message:${tag}:expediteur#${round}`, async () => {
-          await env.DB.prepare("UPDATE missions SET sender_name = ? WHERE id = ?").bind(senderChange[1].trim().slice(0, 80), id).run();
+          await setMissionSender(env, id, sender);
           return true;
         });
-        continue;
       }
-      if (d.action === "mod") {
+      if (d.action === "mod" && rest.length >= 3) {
         model = await this.resilient(step, `message:${tag}:modif#${round}`, async () => {
           const m = await getMission(env, id);
-          return draftModel(env, readFiche(m.fiche), m.sender_name || "Le recruteur", d.text ?? "", current, id);
+          return draftModel(env, readFiche(m.fiche), m.sender_name || "Le recruteur", rest, current, id);
         });
         continue;
       }
+      if (d.action === "mod") continue;
       await step.do(`message:${tag}:valide`, async () => {
         const out = await applyMessage(env, id, current, d.mode ?? "auto");
         await notify(

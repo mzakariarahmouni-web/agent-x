@@ -27,7 +27,10 @@ export class SearchUnavailable extends Error {
   }
 }
 
-type Engine = "tavily" | "brave" | "exa";
+type Engine = "tavily" | "brave" | "exa" | "serper" | "serpapi";
+
+/** Moteurs adossés à Google : X-ray natif (site:, OR, guillemets, -exclusion). */
+const GOOGLE: Engine[] = ["serper", "serpapi"];
 
 /** Ancienne forme « site:domaine requête » → requête structurée. */
 export function toQuery(q: string | SearchQuery): SearchQuery {
@@ -38,7 +41,8 @@ export function toQuery(q: string | SearchQuery): SearchQuery {
 
 /** Texte exact envoyé à chaque moteur (exporté pour les tests). */
 export function engineQuery(engine: Engine, q: SearchQuery): string {
-  if (engine === "brave") return q.domain ? `site:${q.domain} ${q.boolean}` : q.boolean;
+  // Brave et Google (Serper, SerpApi) comprennent la recherche booléenne : X-ray complet.
+  if (engine === "brave" || GOOGLE.includes(engine)) return q.domain ? `site:${q.domain} ${q.boolean}` : q.boolean;
   // Tavily et Exa ne sont pas des moteurs booléens : la même recherche en mots-clés simples
   // (exclusions retirées, groupes OR réduits aux deux premières variantes), le site étant filtré par paramètre.
   return naturalQuery(q.boolean);
@@ -90,6 +94,38 @@ async function exa(env: Env, key: string, q: SearchQuery, n: number): Promise<Se
   return (r.results ?? []).map((x) => ({ title: x.title ?? "", url: x.url, snippet: x.text ?? "" }));
 }
 
+/** Google via Serper (X-ray) : résultats Google France, en français. */
+async function serper(env: Env, key: string, q: SearchQuery, n: number): Promise<SearchHit[]> {
+  const r = await fetchJson<{ organic?: { title?: string; link: string; snippet?: string }[] }>(env, "serper", "https://google.serper.dev/search", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": key },
+    body: JSON.stringify({ q: engineQuery("serper", q), gl: "fr", hl: "fr", num: Math.min(n, 20) }),
+  });
+  return (r.organic ?? []).map((x) => ({ title: x.title ?? "", url: x.link, snippet: x.snippet ?? "" }));
+}
+
+/** Google via SerpApi (X-ray) : relais de Serper. */
+async function serpapi(env: Env, key: string, q: SearchQuery, n: number): Promise<SearchHit[]> {
+  const p = new URLSearchParams({ engine: "google", q: engineQuery("serpapi", q), gl: "fr", hl: "fr", google_domain: "google.fr", num: String(Math.min(n, 20)), api_key: key });
+  const r = await fetchJson<{ organic_results?: { title?: string; link: string; snippet?: string }[] }>(env, "serpapi", `https://serpapi.com/search.json?${p}`, {});
+  return (r.organic_results ?? []).map((x) => ({ title: x.title ?? "", url: x.link, snippet: x.snippet ?? "" }));
+}
+
+async function runEngine(env: Env, engine: Engine, key: string, q: SearchQuery, n: number): Promise<SearchHit[]> {
+  switch (engine) {
+    case "tavily":
+      return tavily(env, key, q, n);
+    case "brave":
+      return brave(env, key, q, n);
+    case "exa":
+      return exa(env, key, q, n);
+    case "serper":
+      return serper(env, key, q, n);
+    case "serpapi":
+      return serpapi(env, key, q, n);
+  }
+}
+
 interface EngineChoice {
   engine: Engine;
   key: string;
@@ -99,12 +135,18 @@ interface EngineChoice {
 async function usableEngines(env: Env, kind: "search" | "extract"): Promise<{ list: EngineChoice[]; soonest: number }> {
   const cfg = await getConfig(env);
   const keys = await secrets(env);
-  const keyOf: Record<Engine, string | undefined> = { tavily: keys.tavily_api_key, brave: keys.brave_api_key, exa: keys.exa_api_key };
+  const keyOf: Record<Engine, string | undefined> = {
+    tavily: keys.tavily_api_key,
+    brave: keys.brave_api_key,
+    exa: keys.exa_api_key,
+    serper: keys.serper_api_key,
+    serpapi: keys.serpapi_api_key,
+  };
   const limits = cfg.search.monthly_limits as Record<string, number>;
   const list: EngineChoice[] = [];
   let soonest = Infinity;
   for (const engine of cfg.search.chain as Engine[]) {
-    if (kind === "extract" && engine === "brave") continue; // Brave ne lit pas les pages.
+    if (kind === "extract" && engine !== "tavily" && engine !== "exa") continue; // seuls Tavily et Exa lisent les pages.
     const key = keyOf[engine];
     if (!key) continue;
     const st = await dayUsage(env, `search:${engine}`);
@@ -135,18 +177,27 @@ export async function webSearch(env: Env, query: string | SearchQuery, missionId
   const q = toQuery(query);
   const { list, soonest: s0 } = await usableEngines(env, "search");
   const n = cfg.search.results_per_query;
-  const outcomes = await Promise.all(
-    list.map(async ({ engine, key }) => {
-      try {
-        const hits = engine === "tavily" ? await tavily(env, key, q, n) : engine === "brave" ? await brave(env, key, q, n) : await exa(env, key, q, n);
-        await recordSuccess(env, `search:${engine}`);
-        return { engine, hits };
-      } catch (e) {
-        await failure(env, engine, e, missionId);
-        return null;
-      }
-    }),
-  );
+  const attempt = async ({ engine, key }: EngineChoice) => {
+    try {
+      const hits = await runEngine(env, engine, key, q, n);
+      await recordSuccess(env, `search:${engine}`);
+      return { engine, hits };
+    } catch (e) {
+      await failure(env, engine, e, missionId);
+      return null;
+    }
+  };
+  // Google (Serper puis SerpApi en relais) compte pour un seul moteur : inutile de payer deux fois les mêmes résultats.
+  const google = list.filter((x) => GOOGLE.includes(x.engine));
+  const others = list.filter((x) => !GOOGLE.includes(x.engine));
+  const googleRun = async () => {
+    for (const g of google) {
+      const r = await attempt(g);
+      if (r) return r;
+    }
+    return null;
+  };
+  const outcomes = await Promise.all([...(google.length ? [googleRun()] : []), ...others.map(attempt)]);
   const ok = outcomes.filter((o): o is { engine: Engine; hits: SearchHit[] } => !!o);
   if (!ok.length) throw new SearchUnavailable(new Date(list.length ? Date.now() + 30 * 60_000 : Number.isFinite(s0) ? s0 : Date.now() + 6 * 3_600_000));
   const seen = new Set<string>();
@@ -170,7 +221,7 @@ export async function webSearchChain(env: Env, query: string | SearchQuery, miss
   for (const { engine, key } of list) {
     try {
       const n = cfg.search.results_per_query;
-      const hits = engine === "tavily" ? await tavily(env, key, q, n) : engine === "brave" ? await brave(env, key, q, n) : await exa(env, key, q, n);
+      const hits = await runEngine(env, engine, key, q, n);
       await recordSuccess(env, `search:${engine}`);
       return { engine, hits };
     } catch (e) {
