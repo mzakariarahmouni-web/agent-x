@@ -16,7 +16,7 @@ Tout tourne dans l'offre gratuite de Cloudflare, avec un combo d'IA gratuites (G
 | F4 Contact | Email automatique depuis Gmail ou Outlook ; LinkedIn pré-rempli par l'extension Edge (profil, lien et message ; un clic « Envoyer ») ; 3 relances aux créneaux ouvrés, dans le ton du message validé. Le sourcing continue en parallèle (nouvelles requêtes toutes les 6 h tant que le vivier est sous la cible) | — |
 | F5 Qualification | Questionnaire court noté sur une grille commune ; rejet proposé, jamais automatique | n°2 : rejet définitif |
 | F6 Dossier | Dossier de compétences anonymisé = CV .docx compatible ATS (adéquation mesurée, aucune compétence inventée) + fiche candidat .docx | n°3 et 4 : shortlist et envoi |
-| F7 Suivi | Décision du client (placé, non retenu) en un clic | — |
+| F7 Suivi | Décision du client (placé, non retenu) en un clic ; tableau de bord web et bilan Telegram chaque matin | — |
 
 ## Installation (environ 20 minutes, une seule fois)
 
@@ -90,9 +90,19 @@ Chaque jour : icône Agent X → **Ouvrir la file du jour**. L'extension ouvre c
 1. Collez une fiche de poste dans Telegram (ou envoyez le PDF).
 2. Validez la fiche modèle (n°1), ou touchez **Modifier** et écrivez la correction.
 3. Tranchez les cartes de profils (✅ Go ou ❌ No go avec motif), puis validez le message de premier contact et choisissez le canal (auto, tout email, tout LinkedIn).
-4. Laissez l'agent travailler. Commandes : `/missions` (avancement, évolution, clôture), `/linkedin` (file sur mobile), `/etat` (IA et quotas), `/effacer email-ou-url`.
+4. Laissez l'agent travailler. Commandes : `/missions` (avancement, évolution, clôture), `/bilan` (bilan du jour), `/linkedin` (file sur mobile), `/etat` (IA et quotas), `/effacer email-ou-url`.
 5. Tranchez les rejets proposés (n°2) et validez la shortlist (n°3 et 4) : les CV arrivent en pièces jointes, prêts à transmettre.
 6. Indiquez la décision du client : **Placé** ou **Non retenu**.
+
+## Suivi et pilotage
+
+- **Tableau de bord** : `https://<votre-worker>/tableau` (même session que la page de configuration). Entonnoir par mission (sourcés → à revoir → Go → contactés → répondu → qualifiés → présentés → placés), ce qui vous attend, incidents (IA en pause, planificateur arrêté), profils présentés par source et activité récente.
+- **Indicateurs du sourceur** : taux de réponse email (cible ≈ 5 %) et LinkedIn (≈ 17 %), taux d'intérêt (≈ 8 %), précision des recherches (pertinents / trouvés, cible ≥ 50 %), délai fiche → shortlist, taux d'acceptation client (≥ 50 %).
+- **Bilan du matin** : chaque jour vers 8 h (heure de Paris), un message Telegram résume l'avancement, les actions à faire et les incidents ; `/bilan` l'affiche à la demande.
+
+## Méthode de sourcing
+
+L'agent suit la méthode d'un sourceur senior : brief complet avant toute recherche (rémunération, exigences, profils exclus, lieu, fourchette d'expérience, langues) ; chaque critère noté séparément avec une preuve ; classes A (≥ 75, contact prioritaire), B (55–74 ou infos manquantes) et C (éliminatoire KO) ; cycle de recherche « interpréter, élargir, construire, évaluer, affiner » avec la précision journalisée par requête ; technique des jumeaux (employeurs et mots des profils retenus) ; CV-thèque interrogée par le sens (empreintes sémantiques) ; apprentissage de vos Go / No go et des décisions du client ; premier message de 51 à 100 mots avec un fait précis du profil, et relances J+2, J+4 (autre canal) et J+7.
 
 ## Fiche candidat : 4 niveaux
 
@@ -124,7 +134,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 73 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 76 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 

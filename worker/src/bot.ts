@@ -1,6 +1,7 @@
 import { deleteSetting, getSetting, journal, nowIso, parseJson, setSetting } from "./db";
 import type { Env } from "./env";
 import { readFiche } from "./fiche";
+import { bilanText, collectStats } from "./pilotage";
 import { applyInterviewNotes, getMission, startEvolution, storeBriefFile, talentSheetText } from "./mission";
 import { missingAt, talentView, transcribe } from "./talent";
 import { eraseCandidate, findCandidate } from "./rgpd";
@@ -66,7 +67,8 @@ const HELP = `🤖 Agent X — mode d'emploi
 4. Je te propose les rejets (n°2), puis la shortlist de 4 avec les CV anonymisés (n°3 et 4).
 5. Tu m'indiques la décision du client : placé ou non retenu.
 
-Commandes : /missions · /linkedin · /etat · /effacer email-ou-url`;
+Commandes : /missions · /bilan · /linkedin · /etat · /effacer email-ou-url
+Chaque matin à 8 h, je t'envoie le bilan ; le tableau de bord complet est sur /tableau.`;
 
 async function listMissions(env: Env, b: Bot): Promise<void> {
   const { results } = await env.DB.prepare(
@@ -125,6 +127,10 @@ async function handleText(env: Env, b: Bot, msg: TgMessage, ctx: ExecutionContex
   if (/^\/missions\b/.test(text)) return listMissions(env, b);
   if (/^\/linkedin\b/.test(text)) return listLinkedin(env, b);
   if (/^\/etat\b/.test(text)) return status(env, b);
+  if (/^\/bilan\b/.test(text)) {
+    const s = await collectStats(env);
+    return void (await send(env, b, bilanText(s, (await getSetting(env, "public_url")) || env.PUBLIC_URL || "")));
+  }
   const erase = /^\/effacer\s+(\S+)/.exec(text);
   if (erase) {
     const id = await findCandidate(env, erase[1]);

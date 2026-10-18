@@ -1,4 +1,5 @@
-import { configPage, handleAdmin } from "./admin";
+import { configPage, handleAdmin, isAdmin } from "./admin";
+import { collectStats, dashboardHtml } from "./pilotage";
 import { handleTelegram } from "./bot";
 import { followUpPage, questionnairePage, questionnaireSubmit, stopPage } from "./candidate-pages";
 import { ensureScheduler, runCron } from "./cron";
@@ -19,6 +20,10 @@ export default {
       ctx.waitUntil(ensureScheduler(env).catch((e) => console.error("planificateur", e)));
       if (path === "/" || path === "/config") return configPage(env);
       if (path === "/sante") return text("ok");
+      if (path === "/tableau") {
+        if (!(await isAdmin(env, req))) return Response.redirect(`${url.origin}/config`, 302);
+        return new Response(dashboardHtml(await collectStats(env)), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      }
       if (path === "/telegram/webhook" && req.method === "POST") return handleTelegram(env, req, ctx);
       if (path.startsWith("/api/admin/") || path.startsWith("/oauth/")) return handleAdmin(env, req, path);
       if (path.startsWith("/api/linkedin/")) return handleLinkedin(env, req, path);

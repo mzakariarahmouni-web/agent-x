@@ -86,7 +86,7 @@ async function load() {
   const callback = (s.public_url || location.origin) + "/oauth/google/callback";
   const msCallback = (s.public_url || location.origin) + "/oauth/microsoft/callback";
   $("#app").innerHTML = `
-  <div class="top"><div><h1>Agent X</h1><div class="muted">${s.counts.missions} mission(s) en cours · ${s.counts.candidats} candidat(s) en CV-thèque · ${s.counts.linkedin} message(s) LinkedIn en file</div></div><div class="muted">${s.public_url || ""}</div></div>
+  <div class="top"><div><h1>Agent X</h1><div class="muted">${s.counts.missions} mission(s) en cours · ${s.counts.candidats} candidat(s) en CV-thèque · ${s.counts.linkedin} message(s) LinkedIn en file</div></div><div class="muted"><a href="/tableau">Tableau de bord</a> · ${s.public_url || ""}</div></div>
 
   <section><h2>1. Prêt à fonctionner ?</h2>
     <div class="checks">

@@ -1358,6 +1358,41 @@ await test("méthode sourceur : carte « Classe A/B | score » avec preuves par 
   assert(/J'ai trouvé votre profil sur LinkedIn/.test(X.outreach.footer("email", "https://x", "t_1", "Z.", "fr.linkedin.com")), "source au premier contact");
 });
 
+await test("pilotage : entonnoir par mission, indicateurs du sourceur, tableau de bord protégé, bilan du matin à 8 h une fois par jour", async () => {
+  const e = await makeEnv();
+  await X.db.setSetting(e, "telegram_bot_token", "123:abc", true);
+  await X.db.setSetting(e, "telegram_chat_id", "42");
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, deadline_at) VALUES ('m_p', 'Chef de projet SIRH', 'x', 'en_cours', '2026-10-21T16:00:00Z')").run();
+  const states = [["score", null], ["en_revue", null], ["en_revue", null], ["contacte", "email"], ["contacte", "linkedin"], ["repondu", "linkedin"], ["presente", "email"], ["place", "email"]];
+  for (const [i, [st, ch]] of states.entries()) {
+    await e.DB.prepare("INSERT INTO candidates (id, full_name, source, profile, skills) VALUES (?, ?, ?, '{}', '')").bind(`c${i}`, `C ${i}`, i > 5 ? "malt.fr" : "linkedin.com").run();
+    await e.DB.prepare("INSERT INTO applications (id, mission_id, candidate_id, state, channel, client_decision) VALUES (?, 'm_p', ?, ?, ?, ?)").bind(`a${i}`, `c${i}`, st, ch, st === "place" ? "place" : null).run();
+  }
+  await e.DB.prepare("INSERT INTO validations (id, mission_id, kind) VALUES ('v1', 'm_p', 'message')").run();
+  await X.db.journal(e, "sourcing", "precision", { trouves: 10, pertinents: 6, precision: 60 }, { mission: "m_p" });
+  await X.db.journal(e, "sourcing", "precision", { trouves: 10, pertinents: 2, precision: 20 }, { mission: "m_p" });
+  const s = await X.pilotage.collectStats(e);
+  const f = s.missions[0].funnel;
+  assert(f.sources === 8 && f.aRevoir === 2 && f.go === 5 && f.contactes === 5 && f.repondu === 3 && f.presentes === 2 && f.places === 1, JSON.stringify(f));
+  assert(s.missions[0].waiting.some((w) => /2 carte/.test(w)) && s.missions[0].waiting.some((w) => /message de premier contact/.test(w)), s.missions[0].waiting.join());
+  const k = Object.fromEntries(s.kpis.map((x) => [x.label, x.value]));
+  assert(k["Précision de recherche"] === "40 %" && k["Acceptation client"] === "100 %" && k["Taux de réponse LinkedIn"] === "50 %" && k["Taux de réponse email"] === "67 %", JSON.stringify(k));
+  assert(s.sources.find((r) => r.source === "malt.fr")?.places === 1, JSON.stringify(s.sources));
+  const ctx = { waitUntil() {} };
+  const denied = await X.worker.fetch(new Request("https://x/tableau"), e, ctx);
+  assert(denied.status === 302 && /\/config$/.test(denied.headers.get("location")), `sans session : ${denied.status}`);
+  const cookie = "ax_session=" + (await X.security.derivedSecret(e.ADMIN_TOKEN, "session"));
+  const page = await (await X.worker.fetch(new Request("https://x/tableau", { headers: { cookie } }), e, ctx)).text();
+  assert(/Tableau de bord/.test(page) && /Chef de projet SIRH/.test(page) && /Précision de recherche/.test(page) && /prefers-color-scheme: dark/.test(page), page.slice(0, 200));
+  tgSent.length = 0;
+  const at8 = new Date("2026-10-20T06:05:00Z"); // 8 h 05 à Paris (heure d'été)
+  assert((await X.pilotage.dailyBilan(e, new Date("2026-10-20T09:00:00Z"))) === false, "hors 8 h");
+  assert((await X.pilotage.dailyBilan(e, at8)) === true, "bilan non envoyé à 8 h");
+  assert((await X.pilotage.dailyBilan(e, new Date("2026-10-20T06:20:00Z"))) === false, "bilan envoyé deux fois");
+  const msg = tgSent.find((m) => /Bilan Agent X/.test(m.body.text ?? ""))?.body.text ?? "";
+  assert(/Chef de projet SIRH/.test(msg) && /À faire : 2 carte/.test(msg) && /\/tableau/.test(msg), msg);
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

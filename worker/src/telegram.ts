@@ -105,6 +105,7 @@ export async function downloadFile(env: Env, token: string, fileId: string): Pro
 
 export const COMMANDS = [
   { command: "missions", description: "Missions en cours et leur avancement" },
+  { command: "bilan", description: "Bilan : avancement, ce qui t'attend, incidents" },
   { command: "linkedin", description: "File des messages LinkedIn à envoyer" },
   { command: "etat", description: "État des IA, quotas et recherches du jour" },
   { command: "effacer", description: "Effacer un candidat (email ou URL de profil)" },

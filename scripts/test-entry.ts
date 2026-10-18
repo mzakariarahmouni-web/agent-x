@@ -27,3 +27,4 @@ export * as talent from "../worker/src/talent";
 export * as cron from "../worker/src/cron";
 export * as semantic from "../worker/src/semantic";
 export { default as worker } from "../worker/src/index";
+export * as pilotage from "../worker/src/pilotage";
