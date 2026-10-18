@@ -150,11 +150,23 @@ Ignore les offres d'emploi, les entreprises, les articles et les pages qui ne d�
 N'invente aucune information : un champ inconnu vaut null ou [].
 Réponds uniquement en JSON : { "profils": [{ "index": 0, "nom": "", "intitule": "", "entreprise": null, "localisation": "", "competences": [""], "annees_experience": null, "secteurs": [""], "langues": [""], "statut": null, "linkedin_url": null, "resume": "", "en_poste": null, "anciennete_entreprise_annees": null, "diplome": null }] }
 « en_poste » : true si l'extrait montre un poste actuel (« depuis », « présent », « actuellement »), false s'il dit le contraire, sinon null ; « anciennete_entreprise_annees » : années dans l'entreprise actuelle si l'extrait le dit.
-« statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null (jamais un niveau ou un intitulé).`;
+« statut » : uniquement "freelance", "salarie" ou "portage" si c'est écrit, sinon null (jamais un niveau ou un intitulé).
+Sois concis : « resume » en une phrase (200 caractères au plus), « competences » : 10 au plus.`;
 
+/**
+ * Profils extraits des résultats de recherche, par lots de 6 : une réponse courte reste complète (les modèles
+ * gratuits coupent les réponses trop longues, ce qui donnait un JSON tronqué) et la requête reste sous les limites.
+ */
 export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: string): Promise<SourcedProfile[]> {
+  const out: SourcedProfile[] = [];
+  const list = hits.slice(0, 24);
+  for (let i = 0; i < list.length; i += 6) out.push(...(await extractBatch(env, list.slice(i, i + 6), missionId)));
+  return out;
+}
+
+async function extractBatch(env: Env, hits: SearchHit[], missionId?: string): Promise<SourcedProfile[]> {
   if (!hits.length) return [];
-  const listing = hits.map((h, i) => `[${i}] ${h.title}\n${h.url}\n${h.snippet.slice(0, 600)}`).join("\n\n");
+  const listing = hits.map((h, i) => `[${i}] ${h.title}\n${h.url}\n${h.snippet.slice(0, 500)}`).join("\n\n");
   const { data } = await ai<{ profils: (Profile & { index: number })[] }>(env, {
     family: "volume",
     label: "extraction de profils",
@@ -162,7 +174,7 @@ export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: s
     system: EXTRACT_SYSTEM,
     prompt: listing,
     json: true,
-    maxTokens: 4000,
+    maxTokens: 3000,
     validate: (d) => (Array.isArray(d?.profils) ? null : "liste « profils » absente"),
   });
   return data.profils
@@ -172,7 +184,7 @@ export async function extractProfiles(env: Env, hits: SearchHit[], missionId?: s
       const isLinkedin = /linkedin\.com\/in\//i.test(hit.url);
       return {
         ...p,
-        competences: Array.isArray(p.competences) ? p.competences : [],
+        competences: Array.isArray(p.competences) ? p.competences.slice(0, 15) : [],
         linkedin_url: isLinkedin ? canonLinkedin(hit.url) : p.linkedin_url ? canonLinkedin(p.linkedin_url) : undefined,
         source: new URL(hit.url).hostname.replace(/^www\./, ""),
         source_url: hit.url,

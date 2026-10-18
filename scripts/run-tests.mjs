@@ -1304,6 +1304,15 @@ await test("notation sur le profil complet : un extrait sans années n'efface pa
   assert(r[0].match.eliminated && /surdimensionné : 20 ans/.test(r[0].match.reasons.join()), JSON.stringify(r[0].match));
 });
 
+await test("extraction par lots de 6 (réponses courtes, jamais de JSON tronqué) : 20 résultats → 4 appels, 20 profils", async () => {
+  const e = await makeEnv();
+  const hits = Array.from({ length: 20 }, (_, i) => ({ title: `Personne ${i} - Chef de projet SIRH | LinkedIn`, url: `https://fr.linkedin.com/in/personne-${i}`, snippet: "SIRH, Workday, Paris" }));
+  aiLog.length = 0;
+  const out = await X.sourcing.extractProfiles(e, hits, "m_x");
+  const calls = aiLog.filter((l) => /extrais des profils/.test(l.system));
+  assert(calls.length === 4 && out.length === 20 && new Set(out.map((p) => p.linkedin_url)).size === 20, `${calls.length} appels, ${out.length} profils`);
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);
