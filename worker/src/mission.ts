@@ -247,6 +247,7 @@ export async function reportSourcing(
   const m = await getMission(env, id);
   const strict = buildBooleanQueries(readFiche(m.fiche), 1, 1)[0];
   const booleanLine = strict ? strict.boolean : "";
+  await journal(env, "agent", "sourcing_rapport", stats, { mission: id });
   await notify(
     env,
     [
