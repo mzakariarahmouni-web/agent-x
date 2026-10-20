@@ -55,4 +55,4 @@ export class BudgetExhausted extends Error {
   }
 }
 
-export const isBudgetError = (e: unknown) => e instanceof BudgetExhausted || /too many subrequests/i.test((e as Error)?.message ?? "");
+export const isBudgetError = (e: unknown) => e instanceof BudgetExhausted || /too many subrequests|too many api requests/i.test((e as Error)?.message ?? "");

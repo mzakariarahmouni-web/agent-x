@@ -33,7 +33,7 @@ import { getSetting } from "./db";
 import { runCron } from "./cron";
 import { ensureSchema } from "./migrate";
 import { reevaluatePool } from "./pool";
-import { BudgetExhausted } from "./outbound";
+import { isBudgetError } from "./outbound";
 import { SearchUnavailable } from "./search";
 import type { SourcingRound } from "./sourcing";
 import { notify } from "./telegram";
@@ -76,7 +76,10 @@ async function resilientStep<T>(env: Env, step: WorkflowStep, name: string, fn: 
       try {
         return { ok: true, value: await fn() };
       } catch (e) {
-        if (e instanceof AllProvidersDown || e instanceof SearchUnavailable || e instanceof BudgetExhausted) return { ok: false, retryAt: e.retryAt.toISOString(), reason: e.message };
+        if (e instanceof AllProvidersDown || e instanceof SearchUnavailable) return { ok: false, retryAt: e.retryAt.toISOString(), reason: e.message };
+        // Limite d'appels de l'exécution (sortants ou base de données), où qu'elle survienne : on attend 70 s,
+        // assez pour que la reprise se fasse dans une nouvelle exécution (compteurs remis à zéro).
+        if (isBudgetError(e)) return { ok: false, retryAt: new Date(Date.now() + 70_000).toISOString(), reason: "budget" };
         throw e;
       }
     };
@@ -84,7 +87,7 @@ async function resilientStep<T>(env: Env, step: WorkflowStep, name: string, fn: 
     const out = (await step.do(`${name}#${i}`, RETRY, attempt as never)) as Outcome<T>;
     if (out.ok) return out.value;
     // Limite d'appels de l'exécution : simple reprise, sans alerte.
-    const silent = Date.parse(out.retryAt) - Date.now() < 60_000;
+    const silent = out.reason === "budget" || Date.parse(out.retryAt) - Date.now() < 60_000;
     if (i === 0 && !silent) {
       await step.do(`${name}#${i}:alerte`, async () => {
         await notify(env, `⏸ Pause automatique (${name}) : ${out.reason}\nReprise prévue vers ${new Date(out.retryAt).toLocaleString("fr-FR", { timeZone: "Europe/Paris" })}. Rien n'est perdu.`);
@@ -116,7 +119,7 @@ async function sourceRoundSteps(env: Env, step: WorkflowStep, id: string, round:
   let n = 0;
   for (const [i, q] of plan.queries.entries()) {
     n += await resilientStep(env, step, `${tag}:q${i}`, () => sourceQueryAndScore(env, id, plan.round, q));
-    await step.sleep(`${tag}:q${i}:pause`, "3 seconds");
+    await step.sleep(`${tag}:q${i}:pause`, "15 seconds");
   }
   return n;
 }

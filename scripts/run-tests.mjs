@@ -1434,6 +1434,7 @@ await test("matching et requêtes : « Chef de projet SIRH » prouve « Gestion 
   assert(!qs.some((q) => q.label === "freelance" || q.domain.startsWith("malt")) && qs.every((q) => /-freelance/.test(q.boolean)), qs.map((q) => q.label + " " + q.boolean).join("\n"));
   const fr = X.sourcing.buildBooleanQueries({ ...sirh(), statuts_acceptes: ["freelance"] }, 1, 10);
   assert(fr.some((q) => q.label === "freelance") && !fr.some((q) => /-freelance/.test(q.boolean)), "mission freelance");
+  assert(X.outbound.isBudgetError(new Error("Too many API requests by single Worker invocation.")), "limite d'appels base de données reconnue");
 });
 
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
