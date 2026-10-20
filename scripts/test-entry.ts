@@ -28,3 +28,4 @@ export * as cron from "../worker/src/cron";
 export * as semantic from "../worker/src/semantic";
 export { default as worker } from "../worker/src/index";
 export * as pilotage from "../worker/src/pilotage";
+export * as surveillance from "../worker/src/surveillance";

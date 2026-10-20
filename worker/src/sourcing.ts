@@ -95,7 +95,9 @@ export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number,
   const LI = !f.localisation || FR_MARKET.test(f.localisation) ? "fr.linkedin.com/in" : "linkedin.com/in";
   // Profils surdimensionnés exclus dès la recherche (directeurs, head of…), sauf si la mission en est une.
   const directionMission = /directeur|directrice|director|head of|chief|\bvp\b|\bdsi\b|\bcto\b/i.test(f.intitule);
-  const EXCL = join2(EXCLUSIONS, directionMission ? "" : OVERSIZED_EXCLUSIONS);
+  // CDI sans freelance accepté : on n'appelle plus les indépendants (requêtes freelance et Malt retirées, mots exclus).
+  const noFreelance = f.statuts_acceptes.length > 0 && !f.statuts_acceptes.includes("freelance") && !f.statuts_acceptes.includes("portage");
+  const EXCL = join2(join2(EXCLUSIONS, directionMission ? "" : OVERSIZED_EXCLUSIONS), noFreelance ? '-freelance -"consultant indépendant" -"auto-entrepreneur"' : "");
   const join = (...parts: string[]) => parts.map((x) => (x === EXCLUSIONS ? EXCL : x)).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
   const q: SearchQuery[] = [];
   if (round === 1) {
@@ -128,7 +130,7 @@ export function buildBooleanQueries(f: Fiche, round: SourcingRound, max: number,
     q.push({ label: "malt élargi", domain: "malt.fr/profile", boolean: join(orGroup(wideTitles), must[0] ? quote(must[0]) : "") });
   }
   const seen = new Set<string>();
-  return q.filter((x) => x.boolean && !seen.has(x.domain + x.boolean) && seen.add(x.domain + x.boolean)).slice(0, max);
+  return q.filter((x) => !(noFreelance && (x.label === "freelance" || (x.domain ?? "").startsWith("malt."))) && x.boolean && !seen.has(x.domain + x.boolean) && seen.add(x.domain + x.boolean)).slice(0, max);
 }
 
 /** Ancienne interface (requêtes texte « site:… »), conservée pour les appels existants. */

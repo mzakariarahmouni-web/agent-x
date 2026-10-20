@@ -1,4 +1,5 @@
 import { dailyBilan } from "./pilotage";
+import { watchMissions } from "./surveillance";
 import { getConfig, getSetting, journal, setSetting } from "./db";
 import type { Env } from "./env";
 import { checkEmailReplies, processDueContacts } from "./outreach";
@@ -49,6 +50,7 @@ export async function runCron(env: Env, _cron = "*/15 * * * *"): Promise<boolean
     ["contacts", () => processDueContacts(env)],
     ["réponses Gmail", () => checkEmailReplies(env)],
     ["rappels", () => remindValidations(env)],
+    ["surveillance des missions", () => watchMissions(env)],
     ["bilan du matin", () => dailyBilan(env)],
   ];
   for (const [name, fn] of tasks) {

@@ -152,10 +152,23 @@ const STOP = new Set(["de", "du", "des", "la", "le", "les", "et", "en", "a", "au
 const word = (hay: string, w: string) => (w.length <= 3 ? new RegExp(`(^|[^a-z0-9])${w.replace(/[.+#]/g, (c) => `\\${c}`)}([^a-z0-9]|$)`).test(hay) : hay.includes(w));
 
 /** Le profil mentionne-t-il la compétence (ou un de ses synonymes) ? Expression longue : tous ses mots significatifs présents. */
+/**
+ * Forme canonique pour comparer des compétences : pluriels ramenés au singulier, et les façons d'écrire
+ * « gérer des projets » (chef de projet, project manager, pilotage / conduite / gestion de projets) unifiées.
+ */
+export function canonSkill(s: string): string {
+  return norm(s)
+    .replace(/\b(chef|cheffe|responsable) de projets?\b|\bprojects? manag\w*|\b(gestion|pilotage|conduite|management|direction) (de |des |du )?projets?\b/g, " gestionprojet ")
+    .split(/\s+/)
+    .map((w) => (w.length > 4 && /[^s]s$/.test(w) ? w.slice(0, -1) : w))
+    .join(" ")
+    .trim();
+}
+
 export function hasSkill(profileTerms: string[], skill: string, synonyms: string[] = []): boolean {
-  const hay = ` ${profileTerms.map(norm).join(" | ")} `;
+  const hay = ` ${profileTerms.map(canonSkill).join(" | ")} `;
   return [skill, ...synonyms].some((t) => {
-    const n = norm(t.replace(/\([^)]*\)/g, " "));
+    const n = canonSkill(t.replace(/\([^)]*\)/g, " "));
     if (!n) return false;
     if (word(hay, n)) return true;
     const words = n.split(" ").filter((w) => w && !STOP.has(w));

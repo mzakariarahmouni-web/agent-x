@@ -40,6 +40,8 @@ import { notify } from "./telegram";
 
 export interface MissionParams {
   missionId: string;
+  /** Reprise par la surveillance : fiche déjà validée, on repart du sourcing. */
+  resume?: boolean;
 }
 
 /** Événement envoyé au Workflow par le bot ou les pages (validation, réponses, évolution). */
@@ -199,9 +201,10 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       };
     });
 
-    // F1 + validation n°1 (boucle tant que le recruteur modifie).
-    await this.resilient(step, "fiche", () => analyzeMission(env, id).then(() => true));
-    for (let round = 0; ; round++) {
+    // F1 + validation n°1 (boucle tant que le recruteur modifie). Une reprise repart directement du sourcing.
+    const resume = !!event.payload.resume;
+    if (!resume) await this.resilient(step, "fiche", () => analyzeMission(env, id).then(() => true));
+    for (let round = 0; !resume; round++) {
       await step.do(`v1:envoi#${round}`, async () => {
         await sendFicheValidation(env, id);
         return true;
@@ -219,7 +222,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       await this.resilient(step, `v1:modif#${round}`, () => applyFicheChange(env, id, d.text ?? "").then(() => true));
     }
 
-    await step.do("lancement", () => startMission(env, id));
+    if (!resume) await step.do("lancement", () => startMission(env, id));
 
     // F3 : CV-thèque, puis web public (booléen), tour élargi si besoin, lecture des pages publiques.
     const fromCv = await this.resilient(step, "sourcing:cvtheque", () => sourceFromCvtheque(env, id));

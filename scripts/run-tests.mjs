@@ -1393,6 +1393,49 @@ await test("pilotage : entonnoir par mission, indicateurs du sourceur, tableau d
   assert(/Chef de projet SIRH/.test(msg) && /À faire : 2 carte/.test(msg) && /\/tableau/.test(msg), msg);
 });
 
+await test("surveillance : un Workflow de mission arrêté (ou bloqué sans activité) est relancé là où il en était, au plus 3 fois par jour", async () => {
+  const e = await makeEnv();
+  await X.db.setSetting(e, "telegram_bot_token", "123:abc", true);
+  await X.db.setSetting(e, "telegram_chat_id", "42");
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, workflow_id) VALUES ('m_w', 'Chef de projet SIRH', 'x', 'en_cours', 'm_w')").run();
+  await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, workflow_id) VALUES ('m_ok', 'EDI', 'x', 'en_cours', 'm_ok')").run();
+  const created = [];
+  const terminated = [];
+  const states = { m_w: { status: "errored", error: { name: "Error", message: "Worker exceeded CPU time limit." } }, m_ok: { status: "waiting" } };
+  e.MISSION = {
+    async create({ id, params }) { created.push({ id, params }); states[id] = { status: "running" }; return { id }; },
+    async get(id) { return { async status() { return states[id]; }, async terminate() { terminated.push(id); } }; },
+  };
+  tgSent.length = 0;
+  const r = await X.surveillance.watchMissions(e);
+  assert(r.find((x) => x.missionId === "m_w").action === "reprise" && r.find((x) => x.missionId === "m_ok").action === "aucune", JSON.stringify(r));
+  assert(created.length === 1 && created[0].params.resume === true && created[0].params.missionId === "m_w", JSON.stringify(created));
+  const wid = await e.DB.prepare("SELECT workflow_id FROM missions WHERE id = 'm_w'").first("workflow_id");
+  assert(wid === created[0].id, wid);
+  const j = await e.DB.prepare("SELECT detail FROM journal WHERE action = 'reprise'").first("detail");
+  assert(/exceeded CPU/.test(j), j);
+  assert(tgSent.some((m) => /relancé là où il en était/.test(m.body.text ?? "")), "notification");
+  // Bloqué : « running » sans aucune trace depuis plus de 4 h → arrêté puis relancé.
+  await e.DB.prepare("INSERT INTO journal (at, mission_id, actor, action) VALUES (datetime('now', '-6 hours'), 'm_ok', 'sourcing', 'recherche')").run();
+  states.m_ok = { status: "running" };
+  await X.surveillance.watchMissions(e);
+  assert(terminated.includes("m_ok") && created.some((c) => c.params.missionId === "m_ok"), JSON.stringify({ terminated, created }));
+  // Limite : pas de boucle de relances.
+  for (let i = 0; i < 3; i++) { states[await e.DB.prepare("SELECT workflow_id FROM missions WHERE id = 'm_w'").first("workflow_id")] = { status: "errored" }; await X.surveillance.watchMissions(e); }
+  assert(created.filter((c) => c.params.missionId === "m_w").length === 3, `${created.filter((c) => c.params.missionId === "m_w").length} relances`);
+});
+
+await test("matching et requêtes : « Chef de projet SIRH » prouve « Gestion de projets SIRH » ; un CDI n'interroge pas les freelances", async () => {
+  assert(X.matching.hasSkill(["Chef de projet SIRH"], "Gestion de projets SIRH"), "chef de projet");
+  assert(X.matching.hasSkill(["Project Manager SIRH"], "Gestion de projets SIRH"), "project manager");
+  assert(!X.matching.hasSkill(["Chargée SIRH"], "Gestion de projets SIRH"), "chargée SIRH n'est pas chef de projet");
+  const f = { ...sirh(), statuts_acceptes: ["salarie"] };
+  const qs = X.sourcing.buildBooleanQueries(f, 1, 10);
+  assert(!qs.some((q) => q.label === "freelance" || q.domain.startsWith("malt")) && qs.every((q) => /-freelance/.test(q.boolean)), qs.map((q) => q.label + " " + q.boolean).join("\n"));
+  const fr = X.sourcing.buildBooleanQueries({ ...sirh(), statuts_acceptes: ["freelance"] }, 1, 10);
+  assert(fr.some((q) => q.label === "freelance") && !fr.some((q) => /-freelance/.test(q.boolean)), "mission freelance");
+});
+
 await test("secrets : chiffrés en base (jamais en clair)", async () => {
   const raw = await env.DB.prepare("SELECT value FROM settings WHERE key = 'gemini_api_key'").first("value");
   assert(raw.startsWith("v1.") && raw !== "g", raw);

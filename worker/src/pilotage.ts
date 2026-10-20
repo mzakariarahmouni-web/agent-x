@@ -146,6 +146,12 @@ export async function collectStats(env: Env, now = new Date()): Promise<Stats> {
   const err = await env.DB.prepare("SELECT COUNT(*) AS n FROM journal WHERE actor = 'cron' AND action = 'erreur' AND at >= datetime('now', '-1 day')").first<{ n: number }>();
   if (err?.n) incidents.push(`⚠️ ${err.n} erreur(s) du planificateur sur 24 h`);
   const relais = await env.DB.prepare("SELECT COUNT(*) AS n FROM journal WHERE action = 'relais' AND at >= datetime('now', '-1 day')").first<{ n: number }>();
+  const rep = await env.DB.prepare("SELECT COUNT(*) AS n FROM journal WHERE action = 'reprise' AND at >= datetime('now', '-1 day')").first<{ n: number }>();
+  if (rep?.n) incidents.push(`🔧 ${rep.n} relance(s) automatique(s) de mission sur 24 h`);
+  for (const m of missions.filter((x) => x.status === "en_cours" && !x.waiting.length)) {
+    const last = await env.DB.prepare("SELECT MAX(at) AS at FROM journal WHERE mission_id = ?").bind(m.id).first<{ at: string | null }>();
+    if (last?.at && now.getTime() - Date.parse(`${last.at.replace(" ", "T")}Z`) > 4 * 3_600_000 && m.funnel.go === 0) incidents.push(`⚠️ « ${m.title} » : aucune activité depuis ${last.at} UTC alors que rien ne t'attend (relance automatique au prochain passage)`);
+  }
   if ((relais?.n ?? 0) > 20) incidents.push(`ℹ️ ${relais?.n} bascules d'IA sur 24 h (quotas gratuits sollicités)`);
 
   const { results: jr } = await env.DB.prepare(
@@ -160,8 +166,8 @@ export async function collectStats(env: Env, now = new Date()): Promise<Stats> {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const STATUS: Record<string, string> = { brouillon: "Fiche à valider", en_cours: "En cours", shortlist_envoyee: "Shortlist envoyée", terminee: "Close" };
-const ACTIVE = ["brouillon", "en_cours", "shortlist_envoyee"];
+const STATUS: Record<string, string> = { analyse: "Analyse de la fiche", brouillon: "Fiche à valider", en_cours: "En cours", shortlist_envoyee: "Shortlist envoyée", terminee: "Close" };
+const ACTIVE = ["analyse", "brouillon", "en_cours", "shortlist_envoyee"];
 
 /** Tableau de bord web (protégé par la session de la page de configuration). */
 export function dashboardHtml(s: Stats, now = new Date()): string {

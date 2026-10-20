@@ -119,7 +119,7 @@ Règle de stabilité : un profil stable dans ses entreprises, et surtout dans la
 
 ## Continuité de service
 
-Chaque famille de tâches a un fournisseur principal et deux relais (voir `config/defaults.json`). L'agent bascule avant la limite des quotas (90 %), écarte 15 minutes un fournisseur qui enchaîne 3 erreurs, et, si tout est saturé, met l'étape en pause et la reprend seule, avec une alerte Telegram. Une mission ne s'arrête jamais en cours de route.
+Chaque famille de tâches a un fournisseur principal et deux relais (voir `config/defaults.json`). L'agent bascule avant la limite des quotas (90 %), écarte 15 minutes un fournisseur qui enchaîne 3 erreurs, et, si tout est saturé, met l'étape en pause et la reprend seule, avec une alerte Telegram. Une mission ne s'arrête jamais en cours de route. Toutes les 15 minutes, la surveillance vérifie chaque mission : un traitement arrêté par une erreur, ou bloqué sans activité depuis 4 h, est relancé là où il en était (fiche déjà validée), au plus 3 fois par jour, avec la cause journalisée et une alerte Telegram.
 
 ## RGPD
 
@@ -134,7 +134,7 @@ Chaque famille de tâches a un fournisseur principal et deux relais (voir `confi
 
 ```bash
 npm install
-npm test        # types + 76 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
+npm test        # types + 78 tests (calendrier, matching, relais IA, .docx, parcours complet avec API simulées)
 npx wrangler dev
 ```
 
