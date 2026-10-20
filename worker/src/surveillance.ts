@@ -10,8 +10,8 @@ import { notify } from "./telegram";
 
 const DEAD = ["errored", "terminated"];
 const STUCK_HOURS = 4;
-/** Pendant le sourcing initial, chaque étape écrit au journal en quelques minutes : 45 min de silence = bloqué. */
-const STUCK_SOURCING_MINUTES = 45;
+/** Pendant le sourcing initial, chaque étape écrit au journal en quelques minutes : 25 min de silence = bloqué (une étape dure au plus 15 min). */
+const STUCK_SOURCING_MINUTES = 25;
 const MAX_RESUMES_PER_DAY = 3;
 
 export interface WatchResult {
@@ -44,7 +44,7 @@ export async function watchMissions(env: Env, now = new Date()): Promise<WatchRe
     let dead = DEAD.includes(status);
     if (!dead && status === "running") {
       // « running » sans aucune trace depuis des heures (une attente normale s'affiche « waiting ») : bloqué.
-      // En sourcing initial (aucune carte encore envoyée), le seuil est de 45 min.
+      // En sourcing initial (aucune carte encore envoyée), le seuil est de 25 min.
       const last = await env.DB.prepare("SELECT MAX(at) AS at FROM journal WHERE mission_id = ?").bind(m.id).first<{ at: string | null }>();
       const reviewed = await env.DB.prepare("SELECT 1 AS x FROM journal WHERE mission_id = ? AND action IN ('revue_envoyee', 'sourcing_rapport') LIMIT 1").bind(m.id).first();
       const limitMs = reviewed ? STUCK_HOURS * 3_600_000 : STUCK_SOURCING_MINUTES * 60_000;

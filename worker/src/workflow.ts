@@ -109,7 +109,7 @@ async function enrichSteps(env: Env, step: WorkflowStep, id: string, total: numb
     const r = await resilientStep(env, step, `${tag}:${k}`, () => enrichBatch(env, id, 3));
     enriched += r.enriched;
     if (r.attempted < 3) break;
-    await step.sleep(`${tag}:${k}:pause`, "30 seconds");
+    await step.sleep(`${tag}:${k}:pause`, "1 minute");
   }
   return enriched;
 }
@@ -228,7 +228,14 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     if (!resume) await step.do("lancement", () => startMission(env, id));
 
     // F3 : CV-thèque, puis web public (booléen), tour élargi si besoin, lecture des pages publiques.
-    const fromCv = await this.resilient(step, "sourcing:cvtheque", () => sourceFromCvtheque(env, id));
+    // Reprise avec déjà assez de profils à revoir (ou de cartes en attente) : directement aux cartes, sans nouveau sourcing.
+    const skipSourcing =
+      resume &&
+      (await step.do("reprise:vivier", async () => {
+        const p = await poolStats(env, id);
+        return p.toReview + p.pending >= 5;
+      }));
+    const fromCv = skipSourcing ? 0 : await this.resilient(step, "sourcing:cvtheque", () => sourceFromCvtheque(env, id));
     // Missions lancées avant le découpage en étapes : leur historique garde l'ancien enchaînement.
     const legacy = await step.do("mode", async () => {
       const r = await env.DB.prepare("SELECT created_at FROM missions WHERE id = ?").bind(id).first<{ created_at: string }>();
@@ -236,7 +243,10 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     });
     let fromWeb: number;
     let widened: number;
-    if (legacy) {
+    if (skipSourcing) {
+      fromWeb = 0;
+      widened = 0;
+    } else if (legacy) {
       fromWeb = await this.resilient(step, "sourcing:web", () => sourceFromWeb(env, id, 1));
       widened = await this.resilient(step, "sourcing:web-elargi", () => sourceFromWeb(env, id, 2));
     } else {
@@ -246,7 +256,7 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
       widened = good < cfg.poolTarget ? await sourceRoundSteps(env, step, id, 2, "sourcing:elargi") : 0;
     }
     // Lecture des pages publiques des meilleurs profils, sans connexion (robots de Tavily ou d'Exa).
-    const enriched = legacy ? await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id)) : await enrichSteps(env, step, id, 15, "sourcing:lecture");
+    const enriched = skipSourcing ? 0 : legacy ? await this.resilient(step, "sourcing:lecture", () => enrichTopProfiles(env, id)) : await enrichSteps(env, step, id, 15, "sourcing:lecture");
     await step.do("sourcing:rapport", async () => {
       await reevaluatePool(env, id);
       const pool = await poolStats(env, id);
@@ -255,7 +265,8 @@ export class MissionWorkflow extends WorkflowEntrypoint<Env, MissionParams> {
     });
 
     // Revue : une carte par profil, Go / No go (motif). Rien n'est envoyé sans Go.
-    let cards = await step.do("revue:cartes", () => sendReviewCards(env, id));
+    // Une reprise compte aussi les cartes déjà envoyées et pas encore tranchées.
+    let cards = await step.do("revue:cartes", async () => (await sendReviewCards(env, id)) + (resume ? (await poolStats(env, id)).pending : 0));
     if (cards === 0) {
       // Rien d'assez pertinent : tour de variantes immédiat (sans attendre le sourcing continu).
       if (legacy) await this.resilient(step, "sourcing:variantes", () => sourceFromWeb(env, id, 3));
