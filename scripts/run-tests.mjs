@@ -59,6 +59,7 @@ class Stmt {
     return new Stmt(this.db, this.sql, a.map((v) => (v === undefined ? null : typeof v === "boolean" ? (v ? 1 : 0) : v)));
   }
   _s() {
+    d1Calls.n++;
     return this.db.prepare(this.sql);
   }
   async first(col) {
@@ -75,6 +76,7 @@ class Stmt {
     return { success: true, meta: { changes: r.changes } };
   }
 }
+const d1Calls = { n: 0 };
 class FakeD1 {
   constructor() {
     this.db = new DatabaseSync(":memory:");
@@ -88,6 +90,7 @@ class FakeD1 {
       const res = [];
       // Comme D1 : une lecture dans un lot renvoie ses lignes.
       for (const s of stmts) res.push(/^\s*(select|with)\b/i.test(s.sql) ? await s.all() : await s.run());
+      d1Calls.n -= stmts.length - 1;
       this.db.exec("COMMIT");
       return res;
     } catch (e) {
@@ -658,9 +661,9 @@ await test("pages LinkedIn publiques lues sans connexion (robot Tavily) : profil
 
 await test("élargissement : le tour 2 ne part que si le vivier est trop maigre", async () => {
   calls.length = 0;
-  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify({ mission: { pool_target: 1 } })).run();
+  await X.db.setSetting(env, "config", JSON.stringify({ mission: { pool_target: 1 } }));
   assert((await X.mission.sourceFromWeb(env, missionId, 2)) === 0 && !calls.includes("tavily"), "tour 2 lancé à tort");
-  await env.DB.prepare("DELETE FROM settings WHERE key = 'config'").run();
+  await X.db.deleteSetting(env, "config");
   assert((await X.mission.sourceFromWeb(env, missionId, 2)) > 0 && calls.includes("tavily"), "tour 2 non lancé");
 });
 
@@ -1281,7 +1284,9 @@ await test("sourcing par requête : plan du tour (requêtes déjà lancées excl
   await e.DB.prepare("INSERT INTO missions (id, title, raw_text, status, fiche) VALUES ('m_q', 'Chef de projet AMOA', 'x', 'en_cours', ?)").bind(JSON.stringify({ ...fiche(), questionnaire: [] })).run();
   const plan = await X.mission.planWebQueries(e, "m_q", 1, 3);
   assert(plan.round === 1 && plan.queries.length === 3, JSON.stringify(plan));
+  d1Calls.n = 0;
   const n = await X.mission.sourceQueryAndScore(e, "m_q", 1, plan.queries[0]);
+  assert(d1Calls.n <= 30, `${d1Calls.n} appels à la base pour une requête de 2 profils (limite d'appels par exécution)`);
   assert(n === 2, `${n}`);
   const again = await X.mission.planWebQueries(e, "m_q", 1, 3);
   assert(!again.queries.some((q) => q.boolean === plan.queries[0].boolean), "requête rejouée");

@@ -109,7 +109,7 @@ async function enrichSteps(env: Env, step: WorkflowStep, id: string, total: numb
     const r = await resilientStep(env, step, `${tag}:${k}`, () => enrichBatch(env, id, 3));
     enriched += r.enriched;
     if (r.attempted < 3) break;
-    await step.sleep(`${tag}:${k}:pause`, "3 seconds");
+    await step.sleep(`${tag}:${k}:pause`, "30 seconds");
   }
   return enriched;
 }
@@ -119,7 +119,7 @@ async function sourceRoundSteps(env: Env, step: WorkflowStep, id: string, round:
   let n = 0;
   for (const [i, q] of plan.queries.entries()) {
     n += await resilientStep(env, step, `${tag}:q${i}`, () => sourceQueryAndScore(env, id, plan.round, q));
-    await step.sleep(`${tag}:q${i}:pause`, "15 seconds");
+    await step.sleep(`${tag}:q${i}:pause`, "1 minute");
   }
   return n;
 }

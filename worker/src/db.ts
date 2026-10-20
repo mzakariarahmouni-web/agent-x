@@ -41,7 +41,20 @@ export async function getSetting(env: Env, key: string): Promise<string | null> 
   }
 }
 
+/**
+ * Petit cache par base (30 s) pour la configuration et les clés : chaque appel d'IA les relisait, ce qui faisait
+ * dépasser la limite d'appels à la base par exécution de l'offre gratuite. Toute écriture de réglage le vide.
+ */
+const CACHE_MS = 30_000;
+const cache = new WeakMap<object, { config?: { at: number; v: Config }; secrets?: { at: number; v: Partial<Record<SecretKey, string>> } }>();
+const cacheOf = (env: Env) => {
+  let c = cache.get(env.DB);
+  if (!c) cache.set(env.DB, (c = {}));
+  return c;
+};
+
 export async function setSetting(env: Env, key: string, value: string, secret = false): Promise<void> {
+  cache.delete(env.DB);
   if (secret && !env.ADMIN_TOKEN) throw new Error("ADMIN_TOKEN manquant : impossible de chiffrer la clé");
   const stored = secret ? await encryptSecret(env.ADMIN_TOKEN!, value) : value;
   await env.DB.prepare(
@@ -52,11 +65,14 @@ export async function setSetting(env: Env, key: string, value: string, secret = 
 }
 
 export async function deleteSetting(env: Env, key: string): Promise<void> {
+  cache.delete(env.DB);
   await env.DB.prepare("DELETE FROM settings WHERE key = ?").bind(key).run();
 }
 
 /** Lit plusieurs secrets d'un coup (absents = undefined). */
 export async function secrets(env: Env): Promise<Partial<Record<SecretKey, string>>> {
+  const c = cacheOf(env);
+  if (c.secrets && Date.now() - c.secrets.at < CACHE_MS) return c.secrets.v;
   const out: Partial<Record<SecretKey, string>> = {};
   const { results } = await env.DB.prepare(`SELECT key, value FROM settings WHERE secret = 1`).all<{ key: SecretKey; value: string }>();
   if (!env.ADMIN_TOKEN) return out;
@@ -67,6 +83,7 @@ export async function secrets(env: Env): Promise<Partial<Record<SecretKey, strin
       /* clé chiffrée avec un ancien mot de passe : ignorée */
     }
   }
+  if (env.ADMIN_TOKEN) c.secrets = { at: Date.now(), v: out };
   return out;
 }
 
@@ -82,13 +99,17 @@ function deepMerge<T>(base: T, patch: unknown): T {
 
 /** Configuration effective : valeurs par défaut + réglages enregistrés dans la page de configuration. */
 export async function getConfig(env: Env): Promise<Config> {
+  const c = cacheOf(env);
+  if (c.config && Date.now() - c.config.at < CACHE_MS) return c.config.v;
   const raw = await getSetting(env, "config");
-  if (!raw) return defaults;
+  let v: Config = defaults;
   try {
-    return deepMerge(defaults, JSON.parse(raw));
+    if (raw) v = deepMerge(defaults, JSON.parse(raw));
   } catch {
-    return defaults;
+    v = defaults;
   }
+  c.config = { at: Date.now(), v };
+  return v;
 }
 
 export async function journal(env: Env, actor: string, action: string, detail?: unknown, ids: { mission?: string; candidate?: string } = {}): Promise<void> {
